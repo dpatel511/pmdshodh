@@ -181,8 +181,9 @@ struct ModelArgs {
     /// Skip reads with insertions or deletions (PMDtools --noindels).
     #[arg(long, visible_alias = "noindels")]
     no_indels: bool,
-    /// Rebuild the reference as PMDtools 0.60 does, including its bug for reads that combine an
-    /// insertion or soft clip with a deletion or '=' CIGAR operations. For comparisons only.
+    /// Reproduce PMDtools 0.60 exactly, including its bugs: the reference rebuilt wrongly for reads
+    /// combining an insertion or soft clip with a deletion or '=' CIGAR operations, CpG context
+    /// wrapping around the read ends, and PMDtools' CpG rule for damage tables. For comparisons.
     #[arg(long)]
     pmdtools_compat: bool,
     /// Worker threads for scoring and BGZF (de)compression. Output is identical for any value.
