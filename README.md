@@ -1,29 +1,43 @@
 # pmdshodh
 
-Per-read **post-mortem damage (PMD) scoring and filtering** of ancient DNA alignments: a fast, maintained successor to [PMDtools](https://github.com/pontussk/PMDtools), written in Rust.
+**Fast, maintained post-mortem damage (PMD) scoring and filtering for ancient DNA alignments.**
 
-*pmdshodh* = PMD + Sanskrit *śodh*, "to purify".
+pmdshodh scores every read in a SAM/BAM file for ancient DNA damage, keeps or removes reads by score, and summarises damage patterns. It reproduces the scores of [PMDtools](https://github.com/pontussk/PMDtools) 0.60, reads and writes alignments directly, and runs on multiple threads.
 
-> **Status: alpha (v0.1.0, unreleased).** Scores match PMDtools 0.60 on every read tested (see [Parity](#parity-with-pmdtools)). Not yet on Bioconda or crates.io. No speed has been measured yet; see the [benchmark plan](docs/benchmark-plan.md). The command line may still change before the first release.
+> **Status:** alpha (v0.1.0, not yet released). Scores have been validated against PMDtools on real and synthetic data. Packages, performance benchmarks and CRAM support are still to come.
 
-## What it does
+## Contents
 
-Ancient DNA carries characteristic damage: cytosine deamination shows up as C→T near the 5′ end of reads (and G→A near the 3′ end in double-stranded libraries). PMDtools ([Skoglund et al. 2014, *PNAS*](https://doi.org/10.1073/pnas.1318934111)) gives each read a likelihood-ratio **PMD score**. Ancient DNA studies keep reads above a threshold (often 3) to separate genuinely ancient molecules from modern contamination.
+- [Overview](#overview)
+- [Features](#features)
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [Commands](#commands)
+- [Options](#options)
+- [Output](#output)
+- [Compatibility with PMDtools](#compatibility-with-pmdtools)
+- [Limitations](#limitations)
+- [Development](#development)
+- [License](#license)
 
-pmdshodh computes the same score and:
+## Overview
 
-- **reads SAM and BAM directly**, with no `samtools calmd | python | samtools view` pipe;
-- **writes the filtered BAM or SAM itself**, keeping records unchanged, preserving input order and adding an `@PG` line;
-- **runs on several threads** (`-@`), with identical results for any thread count;
-- **writes a JSON summary** (read counts, score histogram, damage tables) meant for a MultiQC module;
-- **accepts PMDtools' option names** (`--threshold`, `--ss`, `--CpG`, `--UDGhalf`, `-m`, `-q`, …), so existing workflows need few changes;
-- **fixes PMDtools' crashes and silent data loss**, and keeps an exact-compatibility switch for comparisons.
+Ancient DNA molecules carry characteristic damage. Cytosine deamination appears as C→T substitutions near the 5′ end of reads, and as G→A near the 3′ end in double-stranded libraries. The PMD score of [Skoglund et al. (2014)](https://doi.org/10.1073/pnas.1318934111) is a per-read log-likelihood ratio comparing a damage model with a no-damage model. Reads scoring above a threshold (commonly 3) are likely to be ancient rather than modern contamination.
 
-It does not classify taxa, estimate contamination, call genotypes or rescale base qualities.
+pmdshodh implements this score as a single program, with no `samtools calmd | python | samtools view` pipeline. It does not classify taxa, estimate contamination, call genotypes or rescale base qualities.
+
+## Features
+
+- **PMDtools-compatible scores.** It uses the same likelihood model, defaults and options (`--threshold`, `--ss`, `--CpG`, `--UDGhalf`, `-m`, `-q`, …).
+- **Direct SAM/BAM input and output.** Kept records are written unchanged and in input order, with an `@PG` header line.
+- **Multi-threaded** scoring and BGZF compression. Results are identical for any thread count.
+- **JSON run summary** with read counts, a score histogram and damage tables, designed for MultiQC.
+- **Robust input handling.** It never drops reads silently: every skipped read is counted by reason, and invalid input stops with a clear error.
+- **Correct by default, exact on request.** Known PMDtools bugs are fixed, and `--pmdtools-compat` reproduces PMDtools exactly for comparisons.
 
 ## Installation
 
-From source. This needs Rust 1.85 or newer for the 2024 edition; it has been tested with 1.99.1.
+pmdshodh is currently installed from source. It needs Rust 1.85 or newer (tested with 1.99.1).
 
 ```bash
 git clone https://github.com/dpatel511/pmdshodh.git
@@ -32,126 +46,172 @@ cargo build --release
 ./target/release/pmdshodh --version
 ```
 
-Input reads need an **MD tag**. If your aligner does not write one, add it first, e.g. `samtools calmd -b in.bam ref.fa > in.md.bam`.
-
-## Usage
+**Input requirement:** alignments must carry an **MD tag**. If your aligner does not write one, add it with `samtools calmd`:
 
 ```bash
-# Keep reads with PMD score >= 3 (the common threshold), double-stranded library
-pmdshodh filter -t 3 sample.bam -o sample.pmd3.bam
-
-# Same, writing the score on each kept read and a JSON summary, with 8 threads
-pmdshodh filter -t 3 --tag --summary sample.pmd3.json -@ 8 sample.bam -o sample.pmd3.bam
-
-# Single-stranded library, UDG-half treated
-pmdshodh filter -t 3 --ss --UDGhalf sample.bam -o sample.pmd3.bam
-
-# Per-read score table (TSV: read_name, flag, pmds, n_sites)
-pmdshodh score sample.bam -o sample.scores.tsv
-
-# Damage summary only (JSON): C→T / G→A by position, first-base rate with standard error
-pmdshodh damage --range 30 sample.bam -o sample.damage.json
+samtools calmd -b input.bam reference.fa > input.md.bam
 ```
 
-### Subcommands
+## Quick start
 
-| Command | Output |
-|---|---|
-| `filter` | Reads with PMDS ≥ `--threshold` and/or < `--upper-threshold`, as BAM or SAM (from the `-o` extension; `-o -` writes BAM to stdout). |
-| `score` | Tab-separated per-read scores. |
-| `damage` | JSON run summary only. |
+```bash
+# Keep reads with PMD score >= 3 (double-stranded library, no UDG treatment)
+pmdshodh filter --threshold 3 sample.bam -o sample.pmd3.bam
 
-### Main options (all subcommands)
+# Add the score to each kept read, write a run summary, use 8 threads
+pmdshodh filter --threshold 3 --tag --summary sample.json --threads 8 sample.bam -o sample.pmd3.bam
 
-| Option | PMDtools equivalent | Default |
+# Single-stranded, UDG-half treated library
+pmdshodh filter --threshold 3 --library ss --treatment half sample.bam -o sample.pmd3.bam
+
+# Per-read scores as a table
+pmdshodh score sample.bam -o sample.scores.tsv
+
+# Damage summary only
+pmdshodh damage sample.bam -o sample.damage.json
+```
+
+## Commands
+
+| Command | Purpose | Output |
 |---|---|---|
-| `--library ds\|ss` | `--ss` | `ds` (never guessed from the data) |
-| `--treatment none\|half\|full` | `--UDGminus`, `--UDGhalf`, `--UDGplus`/`--CpG` | `none` |
-| `-m, --min-mapq N` | `-m`, `--requiremapq` | 0 |
-| `-q, --min-baseq N` | `-q`, `--requirebaseq` | 0 |
-| `--no-clips`, `--no-indels` | `--noclips`, `--noindels` | off |
-| `--pmd-p`, `--pmd-c`, `--pi-ancient`, `--pi-contamination` | `--PMDpparam`, `--PMDconstant`, `--polymorphism_ancient`, `--polymorphism_contamination` | 0.3, 0.01, 0.001, 0.001 |
-| `-@, --threads N` | – | 1 |
-| `--pmdtools-compat` | – | off (see below) |
-| `--summary FILE`, `--range N` | – (`--range` for tables) | none, 30 |
+| `filter` | Keep reads by PMD score | SAM or BAM, chosen by the `-o` extension (`-o -` writes BAM to stdout) |
+| `score` | Score every read | Tab-separated table: `read_name`, `flag`, `pmds`, `n_sites` |
+| `damage` | Summarise damage without filtering | JSON run summary |
 
-`filter` also has `--tag` (adds the score to kept reads) and `--tag-name pm|DS`:
-- `pm` (default) writes `pm:f`, a 32-bit float;
-- `DS` writes `DS:Z` with 3 decimals, as PMDtools `--writesamfield` does.
+`filter` keeps reads with score **≥ `--threshold`** and/or **< `--upper-threshold`**; at least one is required.
 
-Run `pmdshodh <command> --help` for the full list.
+Run `pmdshodh <command> --help` for every option.
+
+## Options
+
+PMDtools option names are accepted as aliases (shown in the second column).
+
+### Library and treatment
+
+| Option | PMDtools | Default | Description |
+|---|---|---|---|
+| `--library ds\|ss` | `--ss` | `ds` | Double- or single-stranded library. Never inferred from the data. |
+| `--treatment none\|half\|full` | `--UDGminus`, `--UDGhalf`, `--UDGplus` / `--CpG` | `none` | `half`: CpG sites plus the terminal base; `full`: CpG sites only. |
+
+### Read and base selection
+
+| Option | PMDtools | Default | Description |
+|---|---|---|---|
+| `-m, --min-mapq N` | `-m`, `--requiremapq` | 0 | Skip reads below this mapping quality. |
+| `-q, --min-baseq N` | `-q`, `--requirebaseq` | 0 | Ignore bases below this base quality. |
+| `--no-clips` | `--noclips` | off | Skip reads with soft or hard clips. |
+| `--no-indels` | `--noindels` | off | Skip reads with insertions or deletions. |
+
+### Model parameters
+
+| Option | PMDtools | Default |
+|---|---|---|
+| `--pmd-p` | `--PMDpparam` | 0.3 |
+| `--pmd-c` | `--PMDconstant` | 0.01 |
+| `--pi-ancient` | `--polymorphism_ancient` | 0.001 |
+| `--pi-contamination` | `--polymorphism_contamination` | 0.001 |
+
+### Output and performance
+
+| Option | Applies to | Description |
+|---|---|---|
+| `-t, --threshold X` | `filter` | Keep reads with score ≥ X. |
+| `--upper-threshold X` | `filter` | Keep reads with score < X. |
+| `--tag`, `--tag-name pm\|DS` | `filter` | Add the score to kept reads as `pm:f` (32-bit float, default) or `DS:Z` (3 decimals, as PMDtools `--writesamfield`). |
+| `--summary FILE` | `filter`, `score` | Also write the JSON run summary. |
+| `--range N` | all | Positions from each read end in damage tables (default 30). |
+| `-n, --max-reads N` | `damage` | Stop after N reads. |
+| `-@, --threads N` | all | Worker threads (default 1). |
+| `--pmdtools-compat` | all | Reproduce PMDtools 0.60 exactly, including its bugs. |
+| `--quiet` | all | Suppress the summary line on stderr. |
+
+## Output
+
+### Alignments (`filter`)
+
+- Kept records are unchanged (identical when decoded) apart from the optional score tag.
+- Input order is preserved.
+- The input header is copied, and one `@PG` line records the command.
+- Output files are written under a temporary name and renamed only on success, so a failed run never leaves a partial file.
+
+### JSON run summary
+
+A single file per run, versioned with `format_version` (currently `1`). It contains:
+
+| Section | Contents |
+|---|---|
+| `tool`, `command`, `mode`, `model`, `filters` | Version, command line, library and treatment, model parameters, thresholds |
+| `reads` | Input, scored, kept and removed counts; skipped reads by reason; flag counts (duplicate, secondary, supplementary, …) |
+| `score_histogram`, `length_histogram` | Score distribution (0.5-wide bins from −20 to 40), read lengths |
+| `damage` | Counts of read bases A/C/G/T at reference C and G, by position from each molecule end; first-base C→T rate with standard error |
 
 ### Exit status and streams
 
-- **Exit status:**
-  - `0`: success, including empty input;
-  - `1`: runtime failure (e.g. cannot write output);
-  - `2`: invalid options or invalid input, e.g. a mapped read without an MD tag (the message names the read).
-- **Streams:** results go to stdout only when requested (`-o -`, or `score`/`damage` without `-o`). The run summary line and errors go to stderr, and `--quiet` silences the summary line.
-- **No partial output files:** output files are written under a temporary name and renamed only on success.
+| Exit status | Meaning |
+|---|---|
+| `0` | Success, including empty input |
+| `1` | Runtime failure, e.g. the output cannot be written |
+| `2` | Invalid options or invalid input, e.g. a mapped read without an MD tag (the read is named in the message) |
 
-## Parity with PMDtools
+Results go to stdout only when requested (`-o -`, or `score`/`damage` without `-o`). The run summary line and errors go to stderr.
 
-The scoring model is implemented from the paper and from black-box tests of PMDtools 0.60. PMDtools' code was never read (a clean-room implementation, which keeps pmdshodh's licence independent of PMDtools' GPL-3.0).
+## Compatibility with PMDtools
 
-Checks so far, each comparing every read:
+### Validation
 
-| Test | Reads | Result |
+pmdshodh was built from the published model and black-box testing of PMDtools 0.60; PMDtools' source code was not used. Every read in each test set was compared:
+
+| Test set | Reads | Largest score difference |
 |---|---|---|
-| Single-site score terms (ds and ss, Q 0–93, 6 parameter sets) | 5,412 | match to ≤ 1.1 × 10⁻¹³ |
-| Synthetic reads with clips, indels, `=`/`X`, both strands, 8 modes | 1,500 × 8 | match to ≤ 8.3 × 10⁻¹⁴ (with `--pmdtools-compat`) |
-| nf-core/eager test BAMs (mammoth mtDNA, human 1240k capture), modes ds, `--CpG`, `--UDGhalf`, `--ss` | 13,670 × 4 | match to ≤ 3.0 × 10⁻¹⁴ (with `--pmdtools-compat`) |
-| Damage tables vs `pmdtools --deamination --range 30` (no UDG, full UDG) | 1,500 | match at all 30 positions |
+| Single-site score terms (ds and ss, base quality 0–93, 6 parameter sets) | 5,412 | 1.1 × 10⁻¹³ |
+| Synthetic reads with clips, indels and `=`/`X` CIGARs, both strands, 8 modes | 1,500 per mode | 8.3 × 10⁻¹⁴ ¹ |
+| nf-core/eager test BAMs (mammoth mtDNA, human 1240k capture), ds, `--CpG`, `--UDGhalf`, `--ss` | 13,670 per mode | 3.0 × 10⁻¹⁴ ¹ |
+| Damage tables vs `pmdtools --deamination --range 30` (no UDG and full UDG) | 1,500 | identical at all 30 positions |
 
-Details and the exact methods are in [docs/blackbox.md](docs/blackbox.md).
+¹ With `--pmdtools-compat`. Without it, scores differ only where PMDtools has a bug (below).
 
-### Where pmdshodh deliberately differs
+Methods and full results: [docs/blackbox.md](docs/blackbox.md).
 
-PMDtools 0.60 has bugs that change scores. pmdshodh does the correct thing by default; `--pmdtools-compat` reproduces PMDtools exactly. The two bugs that change scores:
+### Differences that change scores
 
-- **Reference rebuilt wrongly for reads that combine an insertion or soft clip with a deletion or `=` CIGAR operations.** Deleted reference bases are scored against the read bases after them, so a deleted G over a read A looks like G→A damage, and later positions shift.
-- **CpG context wraps around the read ends** (in `--CpG` and `--UDGhalf` modes). On the human UDG-treated test BAM this changed the score of **6% of reads**, by up to 1.62. So, in CpG modes, expect pmdshodh's default results to differ from PMDtools'.
+pmdshodh corrects two PMDtools behaviours by default. Use `--pmdtools-compat` to reproduce them.
 
-Other differences, which avoid crashes or silent data loss:
+| PMDtools 0.60 behaviour | Effect | pmdshodh default |
+|---|---|---|
+| The reference is rebuilt wrongly for reads that combine an insertion or soft clip with a deletion or `=` CIGAR operations | Deleted bases are scored against later read bases, and positions shift | Reference rebuilt correctly from CIGAR and MD |
+| CpG context wraps around the read ends in `--CpG` and `--UDGhalf` modes | Changed 6% of read scores (up to 1.62) on the human UDG test BAM | No wrap-around |
+
+**In CpG modes, expect pmdshodh's default results to differ from PMDtools on some reads.**
+
+### Differences that prevent crashes or data loss
 
 | Situation | PMDtools 0.60 | pmdshodh |
 |---|---|---|
-| Mapped read without MD tag | dropped silently | error, exit 2 |
-| MD without `0` after a deletion (MALT, issue #5) | misparsed silently | read correctly |
-| Hard-clipped reads | dropped | scored |
-| Input already carrying a `DS:Z` tag; `DS:Z:` text in QUAL (#9) | crash | handled |
-| Empty input | crash | empty output, exit 0 |
-| Damage site ≥ 1,000 bp from a read end; hundreds of mismatches in one read | crash | scored |
-| `--first` (first-base damage with standard error) | crashes in the 0.60 release (#8, #14) | in the JSON summary |
+| Mapped read without an MD tag | Dropped silently | Error (exit 2) |
+| MD string without a `0` after a deletion (as written by MALT) | Misparsed silently | Parsed correctly |
+| Hard-clipped reads | Dropped | Scored |
+| Existing `DS:Z` tag, or `DS:Z:` text in qualities | Crash | Handled |
+| Empty input | Crash | Empty output, exit 0 |
+| Damage site ≥ 1,000 bp from a read end, or hundreds of mismatches in one read | Crash | Scored |
+| `--first` (first-base damage rate with standard error) | Crashes in the 0.60 release | Reported in the JSON summary |
 
-The full list, with the reasoning for each, is in [docs/design.md](docs/design.md) §5.
+### Behaviour kept for compatibility
 
-**What does not change:** the likelihood model itself, including two things that look odd but are what PMDtools computes.
-- The null model assumes a background damage rate of 0.001.
-- In `--ss` mode each C site contributes two terms, so ss scores are on a larger scale than ds scores.
+These are part of PMDtools' score as computed, and pmdshodh keeps them so that scores mean the same:
 
-pmdshodh keeps both so its scores mean the same as PMDtools'.
+- The no-damage model assumes a background damage rate of 0.001.
+- In single-stranded mode, each C site contributes two terms, so ss scores are on a larger scale than ds scores.
+- Reads are scored regardless of SAM flags (duplicates, secondary and supplementary alignments, paired reads). Remove unwanted reads beforehand; the summary counts them.
 
-## JSON summary
+The complete list, with reasoning: [docs/design.md](docs/design.md) §5.
 
-`--summary` (or `damage`) writes one JSON file per run (`format_version: 1`). It contains:
-- the tool version and command;
-- the library mode and model parameters;
-- read counts: input, scored, kept, removed, and skipped by reason;
-- flag counts (duplicate, secondary, supplementary, …);
-- a score histogram and read-length histograms;
-- **damage tables**: counts of read bases A/C/G/T at reference C and G, by position from each end of the molecule;
-- the first-position C→T rate with its standard error.
+## Limitations
 
-Field changes bump `format_version`. A MultiQC module is planned.
-
-## Known limitations
-
-- CRAM input is not supported yet.
-- No benchmarks yet ([plan](docs/benchmark-plan.md)).
-- No real single-stranded library has been tested; ss parity rests on synthetic reads.
-- UDG-half damage *tables* do not yet match PMDtools' (scores do); see [docs/blackbox.md](docs/blackbox.md) §1.6d.
-- Reads are scored whatever their SAM flags (duplicates, secondary alignments, unpaired mates of read pairs), as in PMDtools. Remove what you don't want first; the summary counts them.
+- CRAM input is not yet supported.
+- Performance has not been benchmarked yet; see the [benchmark plan](docs/benchmark-plan.md).
+- No real single-stranded library has been tested; single-stranded parity rests on synthetic reads.
+- UDG-half damage *tables* do not yet match PMDtools (UDG-half *scores* do).
 
 ## Development
 
@@ -161,16 +221,10 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-The tests compare pmdshodh against values that PMDtools 0.60 produced, stored in `tests/data/`. The scripts in `tests/oracle/` regenerate them, and need PMDtools 0.60 under Linux or WSL. `tests/oracle/pmd_reference.py` is a short, readable Python version of the scoring model.
+- **Reference data:** the tests compare against values produced by PMDtools 0.60, stored in `tests/data/`. The scripts in `tests/oracle/` regenerate them; they need PMDtools 0.60 on Linux or WSL.
+- **Readable model:** `tests/oracle/pmd_reference.py` is a short Python version of the scoring model.
+- **Background:** research, design decisions and black-box findings are in [docs/](docs/).
 
-Background research is in [docs/](docs/): literature review, feature survey, black-box findings and design decisions.
+## License
 
-## Citation
-
-If you use pmdshodh, please cite the method it implements:
-
-> Skoglund P, Northoff BH, Shunkov MV, Derevianko AP, Pääbo S, Krause J, Jakobsson M (2014). Separating endogenous ancient DNA from modern day contamination in a Siberian Neandertal. *PNAS* 111(6):2229–2234. [doi:10.1073/pnas.1318934111](https://doi.org/10.1073/pnas.1318934111)
-
-## Licence
-
-[MIT](LICENSE). pmdshodh contains no PMDtools code.
+[MIT](LICENSE).
