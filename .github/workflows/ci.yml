@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test
+
+      - name: Install samtools (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y samtools
+
+      - name: Install samtools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install samtools
+
+      - name: Check BAM output with samtools
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build
+          bin=target/debug/pmdshodh
+          in=tests/data/reads_random.sam
+          out=$RUNNER_TEMP
+          samtools --version | head -1
+
+          # One and four threads, score tag, BAM to stdout, and BAM input read back.
+          "$bin" filter --threshold 3 --quiet -@ 1 "$in" -o "$out/t1.bam"
+          "$bin" filter --threshold 3 --quiet -@ 4 "$in" -o "$out/t4.bam"
+          "$bin" filter --threshold 3 --quiet --tag "$in" -o "$out/tag.bam"
+          "$bin" filter --threshold 3 --quiet "$in" -o - > "$out/stdout.bam"
+          "$bin" filter --threshold 3 --quiet "$out/t1.bam" -o "$out/roundtrip.bam"
+
+          samtools quickcheck -v "$out"/t1.bam "$out"/t4.bam "$out"/tag.bam "$out"/stdout.bam "$out"/roundtrip.bam
+
+          # Records (not headers: @PG CL differs) must match the single-threaded file output.
+          samtools view "$out/t1.bam" > "$out/t1.txt"
+          for f in t4 stdout roundtrip; do
+            samtools view "$out/$f.bam" | cmp - "$out/t1.txt"
+          done
+          echo "records kept: $(wc -l < "$out/t1.txt")"
+          test -s "$out/t1.txt"
