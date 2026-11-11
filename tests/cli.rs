@@ -407,3 +407,72 @@ fn damage_max_reads_stops_early_with_status_0() {
     let j = damage_json(&["-n", "100"]);
     assert_eq!(j["reads"]["input"], 100);
 }
+
+/// Multi-threaded output must be byte-identical to single-threaded output (CLAUDE.md §12).
+/// The input repeats the fixture's records to span several batches and many BGZF blocks.
+#[test]
+fn output_is_identical_for_any_thread_count() {
+    let dir = tmp_dir("threads");
+    let text = fs::read_to_string(data("reads_random.sam")).unwrap();
+    let (header, body): (Vec<&str>, Vec<&str>) = text.lines().partition(|l| l.starts_with('@'));
+    let mut big = header.join("\n") + "\n";
+    for _ in 0..17 {
+        big += &(body.join("\n") + "\n");
+    }
+    let sam = dir.join("big.sam");
+    fs::write(&sam, big).unwrap();
+
+    let mut outputs = Vec::new();
+    for threads in ["1", "4"] {
+        let bam = dir.join(format!("out{threads}.bam"));
+        let json = dir.join(format!("out{threads}.json"));
+        let o = run(&[
+            "filter",
+            "-t",
+            "3",
+            "--tag",
+            "-@",
+            threads,
+            "--quiet",
+            "--summary",
+            json.to_str().unwrap(),
+            sam.to_str().unwrap(),
+            "-o",
+            bam.to_str().unwrap(),
+        ]);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        // Score the BAM we just wrote, exercising multi-threaded BGZF reading.
+        let tsv = run(&["score", "-@", threads, "--quiet", bam.to_str().unwrap()]);
+        assert!(tsv.status.success());
+        let mut summary: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&json).unwrap()).unwrap();
+        summary["command"] = serde_json::Value::Null; // the command line records -@
+        outputs.push((fs::read(&bam).unwrap(), summary, tsv.stdout));
+    }
+    let (a, b) = (&outputs[0], &outputs[1]);
+    assert_eq!(a.1["reads"]["input"], 25_500);
+    assert_eq!(a.1, b.1, "summary differs between 1 and 4 threads");
+    assert!(a.2 == b.2, "score table differs between 1 and 4 threads");
+    // The BAM bytes differ only because @PG CL records the command line (-@ 1 vs -@ 4).
+    let decode = |t: &str| {
+        let (h, records) = read_records(&dir.join(format!("out{t}.bam")));
+        let mut w = noodles::sam::io::Writer::new(Vec::new());
+        w.write_header(&h).unwrap();
+        let text = String::from_utf8(w.get_ref().clone()).unwrap();
+        let header: Vec<String> = text
+            .lines()
+            .map(|l| {
+                l.split('\t')
+                    .filter(|f| !f.starts_with("CL:"))
+                    .collect::<Vec<_>>()
+                    .join("\t")
+            })
+            .collect();
+        (header, records)
+    };
+    let (ha, ra) = decode("1");
+    let (hb, rb) = decode("4");
+    assert_eq!(ha, hb, "header differs beyond the @PG command line");
+    assert_eq!(ra.len(), rb.len());
+    assert!(ra == rb, "records differ between 1 and 4 threads");
+}

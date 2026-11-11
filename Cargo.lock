@@ -558,6 +558,7 @@ dependencies = [
  "clap",
  "noodles",
  "noodles-util",
+ "rayon",
  "serde_json",
 ]
 

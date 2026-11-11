@@ -6,6 +6,8 @@ use std::process::ExitCode;
 use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 use noodles_util::alignment;
 
+use noodles::sam::alignment::Record as _;
+use pmdshodh::damage::DamageCounts;
 use pmdshodh::model::Params;
 use pmdshodh::reads::{Outcome, ReadFilters, SkipReason, process};
 use pmdshodh::sites::ReadScore;
@@ -183,6 +185,9 @@ struct ModelArgs {
     /// insertion or soft clip with a deletion or '=' CIGAR operations. For comparisons only.
     #[arg(long)]
     pmdtools_compat: bool,
+    /// Worker threads for scoring and BGZF (de)compression. Output is identical for any value.
+    #[arg(short = '@', long, default_value_t = 1)]
+    threads: usize,
 }
 
 impl ModelArgs {
@@ -265,12 +270,12 @@ fn main() -> ExitCode {
     }
 }
 
-fn open_input(path: &PathBuf) -> Result<Box<dyn Read>, Failure> {
+fn open_input(path: &PathBuf) -> Result<Box<dyn Read + Send>, Failure> {
     if path.as_os_str() == "-" {
-        Ok(Box::new(io::stdin().lock()))
+        Ok(Box::new(io::stdin()))
     } else {
         File::open(path)
-            .map(|f| Box::new(f) as Box<dyn Read>)
+            .map(|f| Box::new(f) as Box<dyn Read + Send>)
             .map_err(|e| Failure::Input(format!("cannot open {}: {e}", path.display())))
     }
 }
@@ -286,13 +291,35 @@ struct SummaryArgs {
     range: usize,
 }
 
-type InputReader = alignment::io::Reader<Box<dyn Read>>;
-type AlignmentRecord = Box<dyn noodles::sam::alignment::Record>;
+type InputReader = alignment::io::Reader<Box<dyn Read + Send>>;
+type AlignmentRecord = alignment::Record;
 
-fn open_reader(path: &Path) -> Result<(InputReader, noodles::sam::Header), Failure> {
-    let mut reader = alignment::io::reader::Builder::default()
-        .build_from_reader(open_input(&path.to_path_buf())?)
-        .map_err(|e| Failure::Input(format!("cannot read {}: {e}", path.display())))?;
+fn open_reader(
+    path: &Path,
+    threads: usize,
+) -> Result<(InputReader, noodles::sam::Header), Failure> {
+    use std::io::BufRead;
+    let cannot_read = |e: io::Error| Failure::Input(format!("cannot read {}: {e}", path.display()));
+    let mut input = io::BufReader::new(open_input(&path.to_path_buf())?);
+    let bgzf = input
+        .fill_buf()
+        .map_err(cannot_read)?
+        .starts_with(&[0x1f, 0x8b]);
+    let builder = alignment::io::reader::Builder::default();
+    let source: Box<dyn Read + Send> = if bgzf {
+        let workers = std::num::NonZero::new(threads).unwrap_or(std::num::NonZero::<usize>::MIN);
+        Box::new(noodles::bgzf::io::MultithreadedReader::with_worker_count(
+            workers, input,
+        ))
+    } else {
+        Box::new(input)
+    };
+    let builder = if bgzf {
+        builder.set_compression_method(None)
+    } else {
+        builder
+    };
+    let mut reader = builder.build_from_reader(source).map_err(cannot_read)?;
     let header = reader
         .read_header()
         .map_err(|e| Failure::Input(format!("invalid header: {e}")))?;
@@ -301,6 +328,12 @@ fn open_reader(path: &Path) -> Result<(InputReader, noodles::sam::Header), Failu
 
 /// Read every record (or the first `max_reads`), count it in `summary`, and pass scored reads to
 /// `on_scored`, which returns whether the read was kept (`None` when there is no filtering).
+/// Records read and scored per batch; bounds memory independently of the input size.
+const BATCH: usize = 10_000;
+
+/// Read every record (or the first `max_reads`), count it in `summary`, and pass scored reads to
+/// `on_scored` in input order; it returns whether the read was kept (`None` without filtering).
+/// Scoring runs on the rayon thread pool; results and summary are independent of the thread count.
 fn scan(
     reader: &mut InputReader,
     header: &noodles::sam::Header,
@@ -310,33 +343,74 @@ fn scan(
     max_reads: Option<u64>,
     mut on_scored: impl FnMut(&AlignmentRecord, &ReadScore) -> Result<Option<bool>, Failure>,
 ) -> Result<(), Failure> {
-    for (i, result) in reader.records(header).enumerate() {
-        if max_reads.is_some_and(|m| i as u64 >= m) {
-            break;
+    use rayon::prelude::*;
+    let range = summary.damage.range;
+    let mut n_read = 0u64;
+    loop {
+        let mut batch: Vec<AlignmentRecord> = Vec::with_capacity(BATCH);
+        while batch.len() < BATCH && max_reads.is_none_or(|m| n_read < m) {
+            let mut record = AlignmentRecord::default();
+            let n = reader
+                .read_record(header, &mut record)
+                .map_err(|e| Failure::Input(format!("record {}: {e}", n_read + 1)))?;
+            if n == 0 {
+                break;
+            }
+            n_read += 1;
+            batch.push(record);
         }
-        let record = result.map_err(|e| Failure::Input(format!("record {}: {e}", i + 1)))?;
-        let flags = record
-            .flags()
-            .map_err(|e| Failure::Input(format!("record {}: invalid FLAG: {e}", i + 1)))?;
-        summary.add_input(flags);
-        match process(
-            record.as_ref(),
-            settings,
-            filters,
-            Some(&mut summary.damage),
-        ) {
-            Ok(Outcome::Scored { score, length }) => {
-                let kept = on_scored(&record, &score)?;
-                summary.add_scored(&score, length, kept);
+        if batch.is_empty() {
+            return Ok(());
+        }
+        let chunk = batch.len().div_ceil(rayon::current_num_threads()).max(1);
+        let parts: Vec<(Vec<Result<Outcome, String>>, DamageCounts)> = batch
+            .par_chunks(chunk)
+            .map(|records| {
+                let mut damage = DamageCounts::new(range);
+                let outcomes = records
+                    .iter()
+                    .map(|r| process(r, settings, filters, Some(&mut damage)))
+                    .collect();
+                (outcomes, damage)
+            })
+            .collect();
+        let first = n_read - batch.len() as u64;
+        let outcomes = parts.iter().flat_map(|(o, _)| o.iter());
+        for (k, (record, outcome)) in batch.iter().zip(outcomes).enumerate() {
+            let flags = record.flags().map_err(|e| {
+                Failure::Input(format!(
+                    "record {}: invalid FLAG: {e}",
+                    first + k as u64 + 1
+                ))
+            })?;
+            summary.add_input(flags);
+            match outcome {
+                Ok(Outcome::Scored { score, length }) => {
+                    let kept = on_scored(record, score)?;
+                    summary.add_scored(score, *length, kept);
+                }
+                Ok(Outcome::Skipped(reason)) => summary.add_skipped(*reason),
+                Err(msg) => {
+                    let name = record.name().map_or_else(|| "*".into(), |n| n.to_string());
+                    return Err(Failure::Input(format!("read {name}: {msg}")));
+                }
             }
-            Ok(Outcome::Skipped(reason)) => summary.add_skipped(reason),
-            Err(msg) => {
-                let name = record.name().map_or_else(|| "*".into(), |n| n.to_string());
-                return Err(Failure::Input(format!("read {name}: {msg}")));
-            }
+        }
+        for (_, damage) in &parts {
+            summary.damage.merge(damage);
         }
     }
-    Ok(())
+}
+
+/// Use `threads` worker threads for scoring (and BGZF, where used).
+fn init_threads(threads: usize) -> Result<(), Failure> {
+    if threads == 0 {
+        return Err(Failure::Input("--threads must be at least 1".into()));
+    }
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build_global()
+        .map_err(|e| Failure::Runtime(format!("cannot start threads: {e}")))
 }
 
 fn command_line() -> String {
@@ -408,7 +482,8 @@ impl Finish<'_> {
 
 fn run_score(args: &ScoreArgs) -> Result<(), Failure> {
     let (settings, filters) = args.model.settings().map_err(Failure::Input)?;
-    let (mut reader, header) = open_reader(&args.input)?;
+    init_threads(args.model.threads)?;
+    let (mut reader, header) = open_reader(&args.input, args.model.threads)?;
     let out: Box<dyn Write> = match &args.output {
         Some(path) => Box::new(
             File::create(path)
@@ -456,7 +531,8 @@ fn run_score(args: &ScoreArgs) -> Result<(), Failure> {
 
 fn run_damage(args: &DamageArgs) -> Result<(), Failure> {
     let (settings, filters) = args.model.settings().map_err(Failure::Input)?;
-    let (mut reader, header) = open_reader(&args.input)?;
+    init_threads(args.model.threads)?;
+    let (mut reader, header) = open_reader(&args.input, args.model.threads)?;
     let mut summary = Summary::new(args.range);
     scan(
         &mut reader,
@@ -548,6 +624,7 @@ fn run_filter(args: &FilterArgs) -> Result<(), Failure> {
     use noodles_util::alignment::io::Format;
 
     let (settings, filters) = args.model.settings().map_err(Failure::Input)?;
+    init_threads(args.model.threads)?;
     let to_stdout = args.output.as_os_str() == "-";
     let format = if to_stdout {
         match args.output_format {
@@ -567,7 +644,7 @@ fn run_filter(args: &FilterArgs) -> Result<(), Failure> {
         }
     };
 
-    let (mut reader, in_header) = open_reader(&args.input)?;
+    let (mut reader, in_header) = open_reader(&args.input, args.model.threads)?;
 
     let mut out_header = in_header.clone();
     let program = Map::<sam::header::record::value::map::Program>::builder()
@@ -581,16 +658,13 @@ fn run_filter(args: &FilterArgs) -> Result<(), Failure> {
         .add("pmdshodh", program)
         .map_err(|e| Failure::Runtime(format!("cannot add @PG line: {e}")))?;
 
-    let (atomic, sink): (Option<AtomicOutput>, Box<dyn Write>) = if to_stdout {
-        (None, Box::new(io::stdout().lock()))
+    let (atomic, sink): (Option<AtomicOutput>, Box<dyn Write + Send>) = if to_stdout {
+        (None, Box::new(io::stdout()))
     } else {
         let (a, f) = AtomicOutput::create(&args.output)?;
         (Some(a), Box::new(f))
     };
-    let mut writer = alignment::io::writer::Builder::default()
-        .set_format(format)
-        .build_from_writer(BufWriter::new(sink))
-        .map_err(|e| Failure::Runtime(format!("cannot open output: {e}")))?;
+    let mut writer = OutWriter::new(format, sink, args.model.threads)?;
     let write_err = |e: io::Error| Failure::Runtime(format!("cannot write output: {e}"));
     writer.write_header(&out_header).map_err(write_err)?;
 
@@ -630,7 +704,6 @@ fn run_filter(args: &FilterArgs) -> Result<(), Failure> {
         },
     )?;
     writer.finish(&out_header).map_err(write_err)?;
-    drop(writer);
     if let Some(a) = atomic {
         a.commit()?;
     }
@@ -649,4 +722,63 @@ fn run_filter(args: &FilterArgs) -> Result<(), Failure> {
     }
     fin.report(&json, &summary, args.quiet);
     Ok(())
+}
+
+/// Alignment output. BAM always goes through the multithreaded BGZF writer, so the bytes written
+/// do not depend on the number of threads.
+enum OutWriter {
+    Sam(alignment::io::Writer<BufWriter<Box<dyn Write + Send>>>),
+    Bam(noodles::bam::io::Writer<noodles::bgzf::io::MultithreadedWriter<Box<dyn Write + Send>>>),
+}
+
+impl OutWriter {
+    fn new(
+        format: noodles_util::alignment::io::Format,
+        sink: Box<dyn Write + Send>,
+        threads: usize,
+    ) -> Result<Self, Failure> {
+        use noodles_util::alignment::io::Format;
+        Ok(match format {
+            Format::Bam => {
+                let workers =
+                    std::num::NonZero::new(threads).unwrap_or(std::num::NonZero::<usize>::MIN);
+                OutWriter::Bam(noodles::bam::io::Writer::from(
+                    noodles::bgzf::io::MultithreadedWriter::with_worker_count(workers, sink),
+                ))
+            }
+            _ => OutWriter::Sam(
+                alignment::io::writer::Builder::default()
+                    .set_format(format)
+                    .build_from_writer(BufWriter::new(sink))
+                    .map_err(|e| Failure::Runtime(format!("cannot open output: {e}")))?,
+            ),
+        })
+    }
+
+    fn write_header(&mut self, header: &noodles::sam::Header) -> io::Result<()> {
+        match self {
+            OutWriter::Sam(w) => w.write_header(header),
+            OutWriter::Bam(w) => w.write_header(header),
+        }
+    }
+
+    fn write_record<R: noodles::sam::alignment::Record>(
+        &mut self,
+        header: &noodles::sam::Header,
+        record: &R,
+    ) -> io::Result<()> {
+        use noodles::sam::alignment::io::Write as _;
+        match self {
+            OutWriter::Sam(w) => w.write_record(header, record),
+            OutWriter::Bam(w) => w.write_alignment_record(header, record),
+        }
+    }
+
+    fn finish(&mut self, header: &noodles::sam::Header) -> io::Result<()> {
+        match self {
+            OutWriter::Sam(w) => w.finish(header),
+            // Writes the BGZF end-of-file block and waits for the compression workers.
+            OutWriter::Bam(w) => w.get_mut().finish().map(|_| ()),
+        }
+    }
 }

@@ -124,3 +124,21 @@ impl DamageCounts {
         (Some(p), Some((p * (1.0 - p) / n as f64).sqrt()), n)
     }
 }
+
+impl DamageCounts {
+    /// Add another set of counts (same range). Integer sums, so the order does not matter.
+    pub fn merge(&mut self, other: &DamageCounts) {
+        for (mine, theirs) in [
+            (&mut self.five_prime, &other.five_prime),
+            (&mut self.three_prime, &other.three_prime),
+        ] {
+            for (a, b) in mine.iter_mut().zip(theirs) {
+                for (x, y) in a.iter_mut().zip(b) {
+                    for (u, v) in x.iter_mut().zip(y) {
+                        *u += v;
+                    }
+                }
+            }
+        }
+    }
+}
