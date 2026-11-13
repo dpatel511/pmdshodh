@@ -66,7 +66,8 @@ struct FilterArgs {
     /// Keep reads with PMD score >= this (PMDtools -t/--threshold).
     #[arg(short = 't', long, allow_negative_numbers = true)]
     threshold: Option<f64>,
-    /// Keep reads with PMD score < this (PMDtools --upperthreshold).
+    /// Keep reads with PMD score < this (PMDtools --upperthreshold). Reads with no informative
+    /// sites carry no evidence and are not kept (PMDtools keeps them; so does --pmdtools-compat).
     #[arg(long, visible_alias = "upperthreshold", allow_negative_numbers = true)]
     upper_threshold: Option<f64>,
     /// Add the PMD score to kept reads as a tag (overwrites an existing tag of that name).
@@ -683,7 +684,9 @@ fn run_filter(args: &FilterArgs) -> Result<(), Failure> {
         None,
         |record, score| {
             let keep = args.threshold.is_none_or(|t| score.pmds >= t)
-                && args.upper_threshold.is_none_or(|u| score.pmds < u);
+                && args.upper_threshold.is_none_or(|u| {
+                    score.pmds < u && (score.n_sites > 0 || settings.pmdtools_compat)
+                });
             if !keep {
                 return Ok(Some(false));
             }

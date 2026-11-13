@@ -78,12 +78,18 @@ pub fn site_term_ds(is_match: bool, z: u32, q: u8, params: &Params) -> f64 {
     )
 }
 
-/// Single-stranded (`--ss`) score term of one C site, `z` from the 5′ end and `y` from the 3′ end.
-/// PMDtools 0.60 adds the double-stranded term and the S1 term for the same site
-/// (docs/blackbox.md section 1.4), so this does too.
+/// Single-stranded (`--ss`) score term of one C site, `z` from the 5′ end and `y` from the 3′ end,
+/// as PMDtools 0.60 computes it: the double-stranded term plus the S1 term, so each site counts
+/// twice (docs/blackbox.md section 1.4). Used only with `--pmdtools-compat`.
 pub fn site_term_ss(is_match: bool, z: u32, y: u32, q: u8, params: &Params) -> f64 {
+    site_term_ds(is_match, z, q, params) + site_term_s1(is_match, z, y, q, params)
+}
+
+/// Single-stranded score term of one C site from paper SI Eq. S1 alone (the default `--ss`
+/// score), with the same null-model background damage as the double-stranded term.
+pub fn site_term_s1(is_match: bool, z: u32, y: u32, q: u8, params: &Params) -> f64 {
     let e = error_rate(q);
-    let two_ends = log_ratio(
+    log_ratio(
         is_match,
         p_match_two_ends(
             damage(z, params.p, params.c),
@@ -92,8 +98,7 @@ pub fn site_term_ss(is_match: bool, z: u32, y: u32, q: u8, params: &Params) -> f
             e,
         ),
         p_match_two_ends(NULL_BACKGROUND, NULL_BACKGROUND, params.pi_contamination, e),
-    );
-    site_term_ds(is_match, z, q, params) + two_ends
+    )
 }
 
 #[cfg(test)]
@@ -135,6 +140,25 @@ mod tests {
         assert!(close(
             site_term_ss(true, 1, 30, 40, &p),
             -0.7491557655766737
+        ));
+    }
+
+    // Departure from PMDtools (docs/design.md §5): the default --ss term is Eq. S1 alone, one
+    // term per site and symmetric in the two ends. Values computed independently from the
+    // Eq. S1 formula (docs/blackbox.md 1.4) with the null background 0.001.
+    #[test]
+    fn s1_term_counts_each_site_once() {
+        let p = Params::default();
+        assert!(close(site_term_s1(false, 1, 30, 40, &p), 4.65219207891691));
+        assert!(close(site_term_s1(false, 30, 1, 40, &p), 4.65219207891691));
+        assert!(close(
+            site_term_s1(true, 1, 30, 40, &p),
+            -0.37910752738359293
+        ));
+        // PMDtools' value is the ds term plus this one.
+        assert!(close(
+            site_term_ss(false, 1, 30, 40, &p),
+            site_term_ds(false, 1, 40, &p) + site_term_s1(false, 1, 30, 40, &p)
         ));
     }
 }
