@@ -4,7 +4,7 @@
 
 pmdshodh scores every read in a SAM/BAM file for ancient DNA damage, keeps or removes reads by score, and summarises damage patterns. It uses the scoring model of [PMDtools](https://github.com/pontussk/PMDtools) 0.60, fixes PMDtools' known errors by default (`--pmdtools-compat` reproduces PMDtools exactly), reads and writes alignments directly, and runs on multiple threads.
 
-> **Status:** alpha (v0.1.0, not yet released). Scores have been validated against PMDtools on real and synthetic data. Packages, performance benchmarks and CRAM support are still to come.
+> **Status:** alpha (v0.1.0, not yet released). Scores have been validated against PMDtools on real and synthetic data. Preliminary performance benchmarks are in [docs/benchmarks.md](docs/benchmarks.md); packages and CRAM support are still to come.
 
 ## Contents
 
@@ -212,7 +212,7 @@ The complete list, with reasoning: [docs/design.md](docs/design.md) §5.
 ## Limitations
 
 - CRAM input is not yet supported.
-- Performance has not been benchmarked yet; see the [benchmark plan](docs/benchmark-plan.md).
+- Benchmarks so far are preliminary (3 runs, one laptop): [docs/benchmarks.md](docs/benchmarks.md).
 - No real single-stranded library has been tested; single-stranded parity rests on synthetic reads.
 - UDG-half damage *tables* do not yet match PMDtools (UDG-half *scores* do).
 

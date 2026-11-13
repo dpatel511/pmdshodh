@@ -16,7 +16,7 @@ Each milestone ends with passing tests and, where a claim is made, measured evid
 | # | Milestone | Content | Done when |
 |---|---|---|---|
 | 1 | **CI** | GitHub Actions on Linux and macOS: `fmt`, `clippy`, `test`; `samtools quickcheck` on BAMs written by the tests | Green on every PR |
-| 2 | **Benchmarks** | [benchmark-plan.md](benchmark-plan.md): vs the PMDtools pipeline and metaDMG `pmd`, thread scaling, memory | `docs/benchmarks.md` with raw logs |
+| 2 | **Benchmarks** | [benchmark-plan.md](benchmark-plan.md): vs the PMDtools pipeline and metaDMG `pmd`, thread scaling, memory | `docs/benchmarks.md` (raw logs kept locally, not committed) |
 | 3 | **Easy installation → v0.1.0** | Prebuilt binaries (Linux x86_64/aarch64, macOS, Windows) on GitHub Releases; crates.io; Bioconda recipe; pip (maturin) considered | Users can install without Rust; names re-checked before publishing |
 | 4 | **Reference-based scoring and CRAM** | `-r/--reference ref.fa`: score reads without MD tags by reading the reference; CRAM input | Parity: scores with `-r` equal scores from `calmd` + MD on the same data |
 | 5 | **Damage report** | HTML (and PNG) report: C→T/G→A by position, score histogram, read counts, first-base rate; generated from the JSON summary | Report checked on the eager test BAMs; JSON stays the source of truth |
