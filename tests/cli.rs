@@ -627,3 +627,48 @@ fn upper_threshold_drops_reads_without_evidence_except_in_compat() {
     assert_eq!(kept(&[]), ["one_match"]);
     assert_eq!(kept(&["--pmdtools-compat"]), ["no_sites", "one_match"]);
 }
+
+// BAM records are read through a BAM-specific path (reads::process_bam); it must give the same
+// results as the generic path used for SAM.
+#[test]
+fn bam_and_sam_input_give_identical_scores_and_damage() {
+    let dir = tmp_dir("bam_vs_sam");
+    let sam = data("reads_random.sam");
+    let bam = dir.join("all.bam");
+    // Every scored read passes this threshold, so the BAM holds all reads the SAM scores.
+    let o = run(&[
+        "filter",
+        "--quiet",
+        "-t",
+        "-1e9",
+        sam.to_str().unwrap(),
+        "-o",
+        bam.to_str().unwrap(),
+    ]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    for mode in [&[][..], &["--pmdtools-compat"], &["--ss"], &["--UDGhalf"]] {
+        let scores = |input: &Path| {
+            let mut args = vec!["score", "--quiet"];
+            args.extend_from_slice(mode);
+            args.push(input.to_str().unwrap());
+            let o = run(&args);
+            assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+            o.stdout
+        };
+        assert_eq!(scores(&sam), scores(&bam), "scores differ for {mode:?}");
+        let table = |input: &Path| {
+            let mut args = vec!["damage", "--quiet"];
+            args.extend_from_slice(mode);
+            args.push(input.to_str().unwrap());
+            let o = run(&args);
+            assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+            let json: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+            (json["damage"].clone(), json["reads"]["scored"].clone())
+        };
+        assert_eq!(
+            table(&sam),
+            table(&bam),
+            "damage table differs for {mode:?}"
+        );
+    }
+}

@@ -72,13 +72,62 @@ pub fn process(
     filters: &ReadFilters,
     damage: Option<&mut DamageCounts>,
 ) -> Result<Outcome, String> {
-    let flags = record.flags().map_err(|e| format!("invalid FLAG: {e}"))?;
+    let fields = Fields {
+        flags: &|| record.flags(),
+        mapping_quality: &|| record.mapping_quality().transpose(),
+        cigar: &|| record.cigar().iter().collect(),
+        sequence: &|| record.sequence().iter().collect(),
+        quality_scores: &|| record.quality_scores().iter().collect(),
+        md: &|| record.data().get(&Tag::MISMATCHED_POSITIONS),
+    };
+    process_fields(&fields, settings, filters, damage)
+}
+
+/// [`process`] for a BAM record, reading its fields directly instead of through the generic
+/// record trait (no boxed per-base iterators). Same outcomes and messages.
+pub fn process_bam(
+    record: &noodles::bam::Record,
+    settings: &Settings,
+    filters: &ReadFilters,
+    damage: Option<&mut DamageCounts>,
+) -> Result<Outcome, String> {
+    let fields = Fields {
+        flags: &|| Ok(record.flags()),
+        mapping_quality: &|| Ok(record.mapping_quality()),
+        cigar: &|| record.cigar().iter().collect(),
+        sequence: &|| record.sequence().iter().collect(),
+        quality_scores: &|| Ok(record.quality_scores().as_ref().to_vec()),
+        md: &|| record.data().get(&Tag::MISMATCHED_POSITIONS),
+    };
+    process_fields(&fields, settings, filters, damage)
+}
+
+type Field<'a, T> = &'a dyn Fn() -> T;
+
+/// Field accessors, called only when needed, so a skipped read is not decoded further.
+struct Fields<'a> {
+    flags: Field<'a, std::io::Result<noodles::sam::alignment::record::Flags>>,
+    mapping_quality:
+        Field<'a, std::io::Result<Option<noodles::sam::alignment::record::MappingQuality>>>,
+    cigar: Field<'a, std::io::Result<Vec<noodles::sam::alignment::record::cigar::Op>>>,
+    sequence: Field<'a, Vec<u8>>,
+    quality_scores: Field<'a, std::io::Result<Vec<u8>>>,
+    md: Field<'a, Option<std::io::Result<Value<'a>>>>,
+}
+
+fn process_fields(
+    record: &Fields<'_>,
+    settings: &Settings,
+    filters: &ReadFilters,
+    damage: Option<&mut DamageCounts>,
+) -> Result<Outcome, String> {
+    let flags = (record.flags)().map_err(|e| format!("invalid FLAG: {e}"))?;
     if flags.is_unmapped() {
         return Ok(Outcome::Skipped(SkipReason::Unmapped));
     }
     // A missing mapping quality (255) is kept by any threshold, as in PMDtools.
-    let mapq = match record.mapping_quality() {
-        Some(m) => m.map_err(|e| format!("invalid MAPQ: {e}"))?.get(),
+    let mapq = match (record.mapping_quality)().map_err(|e| format!("invalid MAPQ: {e}"))? {
+        Some(m) => m.get(),
         None => 255,
     };
     if mapq < filters.min_mapq {
@@ -86,8 +135,7 @@ pub fn process(
     }
 
     let mut cigar = Vec::new();
-    for op in record.cigar().iter() {
-        let op = op.map_err(|e| format!("invalid CIGAR: {e}"))?;
+    for op in (record.cigar)().map_err(|e| format!("invalid CIGAR: {e}"))? {
         let n = op.len();
         cigar.push(match op.kind() {
             Kind::Match => CigarOp::Match(n),
@@ -111,15 +159,11 @@ pub fn process(
         return Ok(Outcome::Skipped(SkipReason::Indel));
     }
 
-    let seq: Vec<u8> = record.sequence().iter().collect();
+    let seq = (record.sequence)();
     if seq.is_empty() {
         return Ok(Outcome::Skipped(SkipReason::NoSequence));
     }
-    let qual = record
-        .quality_scores()
-        .iter()
-        .collect::<Result<Vec<u8>, _>>()
-        .map_err(|e| format!("invalid QUAL: {e}"))?;
+    let qual = (record.quality_scores)().map_err(|e| format!("invalid QUAL: {e}"))?;
     if qual.is_empty() || qual.iter().all(|&q| q == 255) {
         return Ok(Outcome::Skipped(SkipReason::NoQualities));
     }
@@ -131,7 +175,7 @@ pub fn process(
         ));
     }
 
-    let md = match record.data().get(&Tag::MISMATCHED_POSITIONS) {
+    let md = match (record.md)() {
         None => return Err("mapped read has no MD tag (add it with samtools calmd)".into()),
         Some(Ok(Value::String(md))) => md.to_vec(),
         Some(Ok(_)) => return Err("MD tag is not a string".into()),

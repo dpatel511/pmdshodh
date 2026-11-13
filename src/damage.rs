@@ -27,8 +27,15 @@ fn complement(b: u8) -> u8 {
     }
 }
 
+/// Index of `b` in [`BASES`].
 fn base_index(b: u8) -> Option<usize> {
-    BASES.iter().position(|&x| x == b)
+    match b {
+        b'A' => Some(0),
+        b'C' => Some(1),
+        b'G' => Some(2),
+        b'T' => Some(3),
+        _ => None,
+    }
 }
 
 impl DamageCounts {
@@ -54,27 +61,22 @@ impl DamageCounts {
         s: &Settings,
     ) {
         let n = seq.len();
-        let (mrefs, mseq, mqual): (Vec<Option<u8>>, Vec<u8>, Vec<u8>) = if reverse {
-            (
-                refs.iter().rev().map(|r| r.map(complement)).collect(),
-                seq.iter()
-                    .rev()
-                    .map(|b| complement(b.to_ascii_uppercase()))
-                    .collect(),
-                qual.iter().rev().copied().collect(),
-            )
-        } else {
-            (
-                refs.to_vec(),
-                seq.iter().map(u8::to_ascii_uppercase).collect(),
-                qual.to_vec(),
-            )
+        // Molecule orientation without copying: molecule position j is SAM position at(j),
+        // complemented for reverse-strand reads.
+        let at = |j: usize| if reverse { n - 1 - j } else { j };
+        let mref = |j: usize| {
+            let r = refs[at(j)];
+            if reverse { r.map(complement) } else { r }
+        };
+        let mbase = |j: usize| {
+            let b = seq[at(j)].to_ascii_uppercase();
+            if reverse { complement(b) } else { b }
         };
         for i in 0..n {
-            let (Some(r), Some(b)) = (mrefs[i], base_index(mseq[i])) else {
+            let (Some(r), Some(b)) = (mref(i), base_index(mbase(i))) else {
                 continue;
             };
-            if mqual[i] < s.min_baseq {
+            if qual[at(i)] < s.min_baseq {
                 continue;
             }
             let ref_index = match r {
@@ -84,14 +86,14 @@ impl DamageCounts {
             };
             let cpg = if ref_index == 0 {
                 if s.pmdtools_compat {
-                    i + 1 < n && mseq[i + 1] == b'G'
+                    i + 1 < n && mbase(i + 1) == b'G'
                 } else {
-                    i + 1 < n && mrefs[i + 1] == Some(b'G')
+                    i + 1 < n && mref(i + 1) == Some(b'G')
                 }
             } else if i > 0 {
-                mrefs[i - 1] == Some(b'C')
+                mref(i - 1) == Some(b'C')
             } else {
-                s.pmdtools_compat && mrefs[n - 1] == Some(b'C')
+                s.pmdtools_compat && mref(n - 1) == Some(b'C')
             };
             let terminal = if ref_index == 0 { i == 0 } else { i == n - 1 };
             let keep = match s.treatment {
