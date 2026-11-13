@@ -187,7 +187,8 @@ struct ModelArgs {
     /// wrapping around the read ends, and PMDtools' CpG rule for damage tables. For comparisons.
     #[arg(long)]
     pmdtools_compat: bool,
-    /// Worker threads for scoring and BGZF (de)compression. Output is identical for any value.
+    /// Worker threads for scoring and BGZF (de)compression; above 1, reading and scoring also
+    /// overlap with output. Output is identical for any value.
     #[arg(short = '@', long, default_value_t = 1)]
     threads: usize,
 }
@@ -336,6 +337,10 @@ const BATCH: usize = 10_000;
 /// Read every record (or the first `max_reads`), count it in `summary`, and pass scored reads to
 /// `on_scored` in input order; it returns whether the read was kept (`None` without filtering).
 /// Scoring runs on the rayon thread pool; results and summary are independent of the thread count.
+///
+/// With more than one thread, the stages overlap: a reader thread reads batch k+2 and a scoring
+/// thread scores batch k+1 while this thread consumes batch k. Batches are consumed in input
+/// order, so output and summary are the same as the sequential loop used with one thread.
 fn scan(
     reader: &mut InputReader,
     header: &noodles::sam::Header,
@@ -345,68 +350,152 @@ fn scan(
     max_reads: Option<u64>,
     mut on_scored: impl FnMut(&AlignmentRecord, &ReadScore) -> Result<Option<bool>, Failure>,
 ) -> Result<(), Failure> {
-    use rayon::prelude::*;
     let range = summary.damage.range;
-    let mut n_read = 0u64;
-    loop {
-        let mut batch: Vec<AlignmentRecord> = Vec::with_capacity(BATCH);
-        while batch.len() < BATCH && max_reads.is_none_or(|m| n_read < m) {
-            let mut record = AlignmentRecord::default();
-            let n = reader
-                .read_record(header, &mut record)
-                .map_err(|e| Failure::Input(format!("record {}: {e}", n_read + 1)))?;
-            if n == 0 {
-                break;
+    if rayon::current_num_threads() == 1 {
+        let mut n_read = 0u64;
+        loop {
+            let batch = read_batch(reader, header, max_reads, &mut n_read)?;
+            if batch.is_empty() {
+                return Ok(());
             }
-            n_read += 1;
-            batch.push(record);
-        }
-        if batch.is_empty() {
-            return Ok(());
-        }
-        let chunk = batch.len().div_ceil(rayon::current_num_threads()).max(1);
-        let parts: Vec<(Vec<Result<Outcome, String>>, DamageCounts)> = batch
-            .par_chunks(chunk)
-            .map(|records| {
-                let mut damage = DamageCounts::new(range);
-                let outcomes = records
-                    .iter()
-                    .map(|r| match r {
-                        AlignmentRecord::Bam(b) => {
-                            process_bam(b, settings, filters, Some(&mut damage))
-                        }
-                        _ => process(r, settings, filters, Some(&mut damage)),
-                    })
-                    .collect();
-                (outcomes, damage)
-            })
-            .collect();
-        let first = n_read - batch.len() as u64;
-        let outcomes = parts.iter().flat_map(|(o, _)| o.iter());
-        for (k, (record, outcome)) in batch.iter().zip(outcomes).enumerate() {
-            let flags = record.flags().map_err(|e| {
-                Failure::Input(format!(
-                    "record {}: invalid FLAG: {e}",
-                    first + k as u64 + 1
-                ))
-            })?;
-            summary.add_input(flags);
-            match outcome {
-                Ok(Outcome::Scored { score, length }) => {
-                    let kept = on_scored(record, score)?;
-                    summary.add_scored(score, *length, kept);
-                }
-                Ok(Outcome::Skipped(reason)) => summary.add_skipped(*reason),
-                Err(msg) => {
-                    let name = record.name().map_or_else(|| "*".into(), |n| n.to_string());
-                    return Err(Failure::Input(format!("read {name}: {msg}")));
-                }
-            }
-        }
-        for (_, damage) in &parts {
-            summary.damage.merge(damage);
+            let parts = score_batch(&batch, settings, filters, range);
+            let first = n_read - batch.len() as u64;
+            consume_batch(&batch, &parts, first, summary, &mut on_scored)?;
         }
     }
+
+    std::thread::scope(|s| {
+        // Rendezvous channel: the reader holds at most the one batch it is reading or handing over.
+        let (tx, rx) = std::sync::mpsc::sync_channel(0);
+        s.spawn(move || {
+            let mut n_read = 0u64;
+            loop {
+                let result = read_batch(reader, header, max_reads, &mut n_read);
+                let last = !matches!(&result, Ok(b) if !b.is_empty());
+                if tx.send(result).is_err() || last {
+                    return;
+                }
+            }
+        });
+        let join = |h: std::thread::ScopedJoinHandle<'_, _>| {
+            h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))
+        };
+        let mut first = 0u64;
+        let mut in_flight = None;
+        loop {
+            // The reader sends until its last batch, so recv only fails after we stopped early.
+            let next = rx.recv().unwrap_or_else(|_| Ok(Vec::new()));
+            let next = match next {
+                Ok(batch) if !batch.is_empty() => Some(s.spawn(move || {
+                    let parts = score_batch(&batch, settings, filters, range);
+                    (batch, parts)
+                })),
+                Ok(_) => None,
+                Err(e) => {
+                    // Earlier reads come first: report their errors before the read error.
+                    if let Some(h) = in_flight.take() {
+                        let (batch, parts): (Vec<AlignmentRecord>, Scored) = join(h);
+                        consume_batch(&batch, &parts, first, summary, &mut on_scored)?;
+                    }
+                    return Err(e);
+                }
+            };
+            if let Some(h) = in_flight.take() {
+                let (batch, parts): (Vec<AlignmentRecord>, Scored) = join(h);
+                consume_batch(&batch, &parts, first, summary, &mut on_scored)?;
+                first += batch.len() as u64;
+            }
+            match next {
+                Some(h) => in_flight = Some(h),
+                None => return Ok(()),
+            }
+        }
+    })
+}
+
+/// Outcomes and damage counts of one batch, in input order, one entry per scoring chunk.
+type Scored = Vec<(Vec<Result<Outcome, String>>, DamageCounts)>;
+
+/// Read up to [`BATCH`] records; an empty batch means the end of the input (or of `max_reads`).
+fn read_batch(
+    reader: &mut InputReader,
+    header: &noodles::sam::Header,
+    max_reads: Option<u64>,
+    n_read: &mut u64,
+) -> Result<Vec<AlignmentRecord>, Failure> {
+    let mut batch: Vec<AlignmentRecord> = Vec::with_capacity(BATCH);
+    while batch.len() < BATCH && max_reads.is_none_or(|m| *n_read < m) {
+        let mut record = AlignmentRecord::default();
+        let n = reader
+            .read_record(header, &mut record)
+            .map_err(|e| Failure::Input(format!("record {}: {e}", *n_read + 1)))?;
+        if n == 0 {
+            break;
+        }
+        *n_read += 1;
+        batch.push(record);
+    }
+    Ok(batch)
+}
+
+fn score_batch(
+    batch: &[AlignmentRecord],
+    settings: &Settings,
+    filters: &ReadFilters,
+    range: usize,
+) -> Scored {
+    use rayon::prelude::*;
+    let chunk = batch.len().div_ceil(rayon::current_num_threads()).max(1);
+    batch
+        .par_chunks(chunk)
+        .map(|records| {
+            let mut damage = DamageCounts::new(range);
+            let outcomes = records
+                .iter()
+                .map(|r| match r {
+                    AlignmentRecord::Bam(b) => process_bam(b, settings, filters, Some(&mut damage)),
+                    _ => process(r, settings, filters, Some(&mut damage)),
+                })
+                .collect();
+            (outcomes, damage)
+        })
+        .collect()
+}
+
+/// Count a scored batch in `summary` and pass its scored reads to `on_scored`, in order.
+/// `first` is the number of records before this batch (for error messages).
+fn consume_batch(
+    batch: &[AlignmentRecord],
+    parts: &Scored,
+    first: u64,
+    summary: &mut Summary,
+    on_scored: &mut impl FnMut(&AlignmentRecord, &ReadScore) -> Result<Option<bool>, Failure>,
+) -> Result<(), Failure> {
+    let outcomes = parts.iter().flat_map(|(o, _)| o.iter());
+    for (k, (record, outcome)) in batch.iter().zip(outcomes).enumerate() {
+        let flags = record.flags().map_err(|e| {
+            Failure::Input(format!(
+                "record {}: invalid FLAG: {e}",
+                first + k as u64 + 1
+            ))
+        })?;
+        summary.add_input(flags);
+        match outcome {
+            Ok(Outcome::Scored { score, length }) => {
+                let kept = on_scored(record, score)?;
+                summary.add_scored(score, *length, kept);
+            }
+            Ok(Outcome::Skipped(reason)) => summary.add_skipped(*reason),
+            Err(msg) => {
+                let name = record.name().map_or_else(|| "*".into(), |n| n.to_string());
+                return Err(Failure::Input(format!("read {name}: {msg}")));
+            }
+        }
+    }
+    for (_, damage) in parts {
+        summary.damage.merge(damage);
+    }
+    Ok(())
 }
 
 /// Use `threads` worker threads for scoring (and BGZF, where used).
