@@ -1,6 +1,6 @@
 # Benchmark plan — 2026-11-11
 
-Status: **plan only; nothing measured yet.** No speed or memory claim may be made until this plan has been run and the results are written to `docs/benchmarks.md` with raw logs (CLAUDE.md §7).
+Status: **run once as a preliminary round** (3 runs per configuration, 2026-11-12): results in [benchmarks.md](benchmarks.md); the raw logs were kept locally, not committed (decided 2026-11-13). The full 5-run round on the final build is still to do. No speed or memory claim may go beyond what benchmarks.md shows (CLAUDE.md §7).
 
 ## 1. Questions
 1. **PMDtools vs pmdshodh.** How long does a PMD-filtered BAM take with PMDtools as nf-core runs it, against `pmdshodh filter` on the same input and threshold?
@@ -52,7 +52,7 @@ Status: **plan only; nothing measured yet.** No speed or memory claim may be mad
    - pmdshodh `filter` and `score` at `-@` 1, 2, 4, 8, 12;
    - for pmdshodh: default and `--pmdtools-compat`.
 5. **Correctness on every input:** compare the PMDtools filtered read names with pmdshodh's (`--pmdtools-compat`): reads compared, differing reads, largest score difference. Any mismatch stops the benchmark until explained.
-6. **Raw data kept:** commands, `/usr/bin/time` output and tool versions go to `docs/benchmarks/raw/` (logs only, no BAMs).
+6. **Raw data kept:** commands, `/usr/bin/time` output and tool versions go to `docs/benchmarks/raw/` (logs only, no BAMs). They stay local and are not committed (decided 2026-11-13); benchmarks.md reports the numbers taken from them.
 
 ## 6. Reporting rules
 - Report what was measured: "pmdshodh filter, 8 threads, took X s (median of 5) vs Y s for the PMDtools pipeline, on input Z, on this hardware". No general "N× faster" headline without the input, hardware and thread count next to it.
