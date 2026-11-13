@@ -121,8 +121,32 @@ pub fn reference_along_read(
 ///   advance, `D` also advances and `=` ignores; the MD reference *with* deleted bases fills the
 ///   remaining positions in order.
 ///
-/// MD is read as PMDtools reads it: after `^`, every letter up to the next digit is deleted.
-pub fn reference_along_read_pmdtools(seq: &[u8], cigar: &[CigarOp], md: &[u8]) -> Vec<Option<u8>> {
+/// MD is read as PMDtools reads it: after `^`, every letter up to the next digit is deleted, and
+/// lowercase letters are kept as they are, so they never count as C or G (sites, CpG context or
+/// the damage table). The default reconstruction reads them as uppercase.
+///
+/// For a reverse-strand read, PMDtools' reverse complement keeps only `ACGTNRY` and `acgt` and
+/// drops every other reference character (e.g. lowercase `n`, most IUPAC codes), so the rest of
+/// the reference shifts towards the molecule's 5′ end (the SAM end) and the positions left over at
+/// the SAM start have no reference base (docs/blackbox.md, 2026-11-13).
+pub fn reference_along_read_pmdtools(
+    seq: &[u8],
+    cigar: &[CigarOp],
+    md: &[u8],
+    reverse: bool,
+) -> Vec<Option<u8>> {
+    let refs = pmdtools_reference_sam_order(seq, cigar, md);
+    let dropped = |r: &Option<u8>| r.is_some_and(|b| !b"ACGTNRYacgt".contains(&b));
+    if !reverse || !refs.iter().any(dropped) {
+        return refs;
+    }
+    let kept: Vec<Option<u8>> = refs.iter().copied().filter(|r| !dropped(r)).collect();
+    std::iter::repeat_n(None, refs.len() - kept.len())
+        .chain(kept)
+        .collect()
+}
+
+fn pmdtools_reference_sam_order(seq: &[u8], cigar: &[CigarOp], md: &[u8]) -> Vec<Option<u8>> {
     // MD reference: None = matches the read, Some(base) = mismatch or deleted base.
     let mut expansion: Vec<(Option<u8>, bool)> = Vec::new(); // (base, is_deleted)
     let mut i = 0;
@@ -140,11 +164,11 @@ pub fn reference_along_read_pmdtools(seq: &[u8], cigar: &[CigarOp], md: &[u8]) -
         } else if md[i] == b'^' {
             i += 1;
             while i < md.len() && md[i].is_ascii_alphabetic() {
-                expansion.push((Some(md[i].to_ascii_uppercase()), true));
+                expansion.push((Some(md[i]), true));
                 i += 1;
             }
         } else {
-            expansion.push((Some(md[i].to_ascii_uppercase()), false));
+            expansion.push((Some(md[i]), false));
             i += 1;
         }
     }
@@ -435,7 +459,7 @@ mod tests {
     }
 
     fn compat(seq: &str, cigar: &[CigarOp], md: &str) -> String {
-        reference_along_read_pmdtools(seq.as_bytes(), cigar, md.as_bytes())
+        reference_along_read_pmdtools(seq.as_bytes(), cigar, md.as_bytes(), false)
             .iter()
             .map(|b| b.map_or('-', char::from))
             .collect()

@@ -139,10 +139,10 @@ pub fn process(
     };
     // Always validate with the correct reconstruction, so invalid records are rejected in both modes.
     let mut refs = reference_along_read(&seq, &cigar, &md)?;
-    if settings.pmdtools_compat {
-        refs = reference_along_read_pmdtools(&seq, &cigar, &md);
-    }
     let reverse = flags.is_reverse_complemented();
+    if settings.pmdtools_compat {
+        refs = reference_along_read_pmdtools(&seq, &cigar, &md, reverse);
+    }
     if let Some(d) = damage {
         d.add_read(&seq, &qual, &refs, reverse, settings);
     }

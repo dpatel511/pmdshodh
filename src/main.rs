@@ -105,7 +105,7 @@ enum TagName {
 struct ScoreArgs {
     /// Input SAM or BAM file ("-" for stdin).
     input: PathBuf,
-    /// Output TSV file (default: stdout).
+    /// Output TSV file (default: stdout; "-" also writes to stdout).
     #[arg(short, long)]
     output: Option<PathBuf>,
     #[command(flatten)]
@@ -486,11 +486,11 @@ fn run_score(args: &ScoreArgs) -> Result<(), Failure> {
     init_threads(args.model.threads)?;
     let (mut reader, header) = open_reader(&args.input, args.model.threads)?;
     let out: Box<dyn Write> = match &args.output {
-        Some(path) => Box::new(
+        Some(path) if path.as_os_str() != "-" => Box::new(
             File::create(path)
                 .map_err(|e| Failure::Runtime(format!("cannot create {}: {e}", path.display())))?,
         ),
-        None => Box::new(io::stdout().lock()),
+        _ => Box::new(io::stdout().lock()),
     };
     let mut out = BufWriter::new(out);
     let write_err = |e: io::Error| Failure::Runtime(format!("cannot write output: {e}"));

@@ -18,3 +18,7 @@ Nothing has been released yet. The first release is planned as v0.1.0 (see [docs
 - JSON run summary (`format_version` 1) with read counts, skipped reads by reason, a score histogram and damage tables.
 - Parity tests against PMDtools on synthetic and real reads.
 - README, design notes, benchmark plan and roadmap.
+
+### Fixed
+- `score -o -` writes to stdout; it used to create a file named `-`.
+- `--pmdtools-compat` now also reproduces PMDtools 0.60 for lowercase reference bases in MD (never counted as C or G) and for reverse-strand reads whose MD contains characters PMDtools drops when reverse-complementing (e.g. lowercase `n`). Default scoring is unchanged; both are listed as departures in docs/design.md.
