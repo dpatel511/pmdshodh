@@ -91,6 +91,8 @@ PMDS is the sum over sites. **A read with no informative sites scores exactly 0.
   - With `--ss` the exception applies only to the molecule's 5′ first base, not its last base.
 - **`=` and `X`** CIGAR operations are scored like `M`. **`N` and `H`** make PMDtools drop the read with a stderr message.
 - **Lowercase read bases** are not recognised: a lowercase `t` is not counted as damage, and a lowercase `c` with an all-match MD drops the read.
+- **Lowercase reference bases in MD** are never C or G (`--printDS`, 2026-11-13): `0c29` with read `T…` scores 0.0 (`0C29`: 5.0297); a reverse read with `29g0` scores 0.0; with `--CpG`, `1g28` stops the preceding C from being CpG (0.0; `1G28`: 1.3220); `--deamination` does not count the site. Found on real data: all 339 compat-mode score differences on ENA ERR1892229 (NOuser read groups) came from this, and uppercasing those MD tags made PMDtools agree with pmdshodh on all 483 affected reads.
+- **Reverse-strand reads drop some reference characters** (`--printalignments`, 2026-11-13): when PMDtools reverse-complements the reference of a reverse read, it keeps `ACGTNRY` and `acgt` and drops every other character (`n`, lowercase IUPAC codes, uppercase `KMSWBDHV`). The reference line becomes shorter and every later base is compared with the wrong read position. Forward reads are not affected. Example: a 30M reverse read with MD `28n0n0` scores 20.94 (`28N0N0`: −0.55). On ERR1892229 this explained the last 3 differing reads (lowercase `n` at the 3′ SAM end; scores 12.5–15.3 instead of about −0.4).
 - **QUAL `*` or SEQ `*`:** the read is dropped silently (exit 0).
 - **Crashes (exit 1, whole run lost):**
   - **any informative site with z ≥ 1000** (IndexError). Single sites at z ≤ 999 work, for C and G alike;

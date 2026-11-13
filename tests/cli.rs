@@ -476,3 +476,124 @@ fn output_is_identical_for_any_thread_count() {
     assert_eq!(ra.len(), rb.len());
     assert!(ra == rb, "records differ between 1 and 4 threads");
 }
+
+/// A one-read SAM file (all bases Q40, all-M CIGAR).
+fn one_read_sam(path: &Path, flag: u16, seq: &str, md: &str) -> PathBuf {
+    let path = path.to_path_buf();
+    let n = seq.len();
+    let qual = "I".repeat(n);
+    let sam = format!(
+        "@SQ\tSN:r\tLN:1000\nx\t{flag}\tr\t100\t60\t{n}M\t*\t0\t0\t{seq}\t{qual}\tMD:Z:{md}\n"
+    );
+    fs::write(&path, sam).unwrap();
+    path
+}
+
+fn single_score(input: &Path, extra: &[&str]) -> f64 {
+    let mut args = vec!["score", "--quiet"];
+    args.extend_from_slice(extra);
+    args.push(input.to_str().unwrap());
+    let o = run(&args);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = String::from_utf8(o.stdout).unwrap();
+    out.lines()
+        .nth(1)
+        .unwrap()
+        .split('\t')
+        .nth(2)
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
+// Lowercase MD bases (outside the SAM spec; seen in real data, docs/benchmarks). PMDtools 0.60 never
+// counts them as C or G (--printDS, 2026-11-13). Default mode reads them as uppercase (departure,
+// docs/design.md §5); --pmdtools-compat reproduces PMDtools.
+#[test]
+fn lowercase_md_bases_default_reads_uppercase_compat_matches_pmdtools() {
+    let dir = tmp_dir("lowercase_md");
+    let a = "A".repeat(28);
+    // (flag, seq, lowercase MD, uppercase MD, options, PMDtools score with uppercase MD)
+    let cases = [
+        (
+            0,
+            format!("T{a}A"),
+            "0c29",
+            "0C29",
+            vec![],
+            5.029717285061266,
+        ),
+        (
+            16,
+            format!("{a}AA"),
+            "29g0",
+            "29G0",
+            vec![],
+            5.029717285061266,
+        ),
+        (
+            0,
+            format!("CA{a}"),
+            "1g28",
+            "1G28",
+            vec!["--CpG"],
+            1.3220303836508658,
+        ),
+    ];
+    for (flag, seq, lower, upper, opts, pmdtools_upper) in cases {
+        let lc = one_read_sam(&dir.join(format!("lower_{lower}.sam")), flag, &seq, lower);
+        let uc = one_read_sam(&dir.join(format!("upper_{upper}.sam")), flag, &seq, upper);
+        let mut compat = vec!["--pmdtools-compat"];
+        compat.extend(&opts);
+        let close = |x: f64, y: f64| (x - y).abs() < 1e-12;
+        assert!(
+            close(single_score(&uc, &compat), pmdtools_upper),
+            "{upper} compat"
+        );
+        assert!(
+            close(single_score(&lc, &opts), pmdtools_upper),
+            "{lower} default"
+        );
+        // PMDtools 0.60 --printDS gives 0.0 for each lowercase case.
+        assert_eq!(single_score(&lc, &compat), 0.0, "{lower} compat");
+    }
+}
+
+#[test]
+fn score_dash_output_writes_to_stdout() {
+    let dir = tmp_dir("score_dash");
+    let input = data("reads_random.sam");
+    let o = Command::new(BIN)
+        .current_dir(&dir)
+        .args(["score", "--quiet", input.to_str().unwrap(), "-o", "-"])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(
+        String::from_utf8(o.stdout)
+            .unwrap()
+            .starts_with("read_name\tflag\tpmds\tn_sites\n")
+    );
+    assert!(!dir.join("-").exists(), "a file named '-' was created");
+}
+
+// PMDtools 0.60 drops reference characters other than ACGTNRY/acgt (e.g. lowercase n) when it
+// reverse-complements a reverse-strand read, shifting the reference (docs/blackbox.md; seen on
+// ENA ERR1892229). --printDS values from 2026-11-13. Default mode does not shift.
+#[test]
+fn reverse_read_lowercase_n_shift_only_in_pmdtools_compat() {
+    let dir = tmp_dir("lowercase_n");
+    let seq = "ACGTTGCAACGTTGCAACGTTGCAACGTAA";
+    let close = |x: f64, y: f64| (x - y).abs() < 1e-12;
+    let rev_n = one_read_sam(&dir.join("rev_n.sam"), 16, seq, "28n0n0");
+    let rev_upper = one_read_sam(&dir.join("rev_upper.sam"), 16, seq, "28N0N0");
+    let fwd_n = one_read_sam(&dir.join("fwd_n.sam"), 0, seq, "n0n28");
+    let compat = ["--pmdtools-compat"];
+    assert!(close(single_score(&rev_n, &compat), 20.935623477213277));
+    assert!(close(
+        single_score(&rev_upper, &compat),
+        -0.5514281743729341
+    ));
+    assert!(close(single_score(&rev_n, &[]), -0.5514281743729341));
+    assert!(close(single_score(&fwd_n, &compat), -0.30397668401849764));
+}
