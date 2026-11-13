@@ -2,7 +2,7 @@
 
 **Fast, maintained post-mortem damage (PMD) scoring and filtering for ancient DNA alignments.**
 
-pmdshodh scores every read in a SAM/BAM file for ancient DNA damage, keeps or removes reads by score, and summarises damage patterns. It reproduces the scores of [PMDtools](https://github.com/pontussk/PMDtools) 0.60, reads and writes alignments directly, and runs on multiple threads.
+pmdshodh scores every read in a SAM/BAM file for ancient DNA damage, keeps or removes reads by score, and summarises damage patterns. It uses the scoring model of [PMDtools](https://github.com/pontussk/PMDtools) 0.60, fixes PMDtools' known errors by default (`--pmdtools-compat` reproduces PMDtools exactly), reads and writes alignments directly, and runs on multiple threads.
 
 > **Status:** alpha (v0.1.0, not yet released). Scores have been validated against PMDtools on real and synthetic data. Packages, performance benchmarks and CRAM support are still to come.
 
@@ -28,7 +28,7 @@ pmdshodh implements this score as a single program, with no `samtools calmd | py
 
 ## Features
 
-- **PMDtools-compatible scores.** It uses the same likelihood model, defaults and options (`--threshold`, `--ss`, `--CpG`, `--UDGhalf`, `-m`, `-q`, …).
+- **PMDtools-compatible scores.** It uses the same likelihood model, defaults and options (`--threshold`, `--ss`, `--CpG`, `--UDGhalf`, `-m`, `-q`, …). Single-stranded (`--ss`) scores follow the paper's model and are lower than PMDtools'; see [Differences that change scores](#differences-that-change-scores).
 - **Direct SAM/BAM input and output.** Kept records are written unchanged and in input order, with an `@PG` header line.
 - **Multi-threaded** scoring and BGZF compression. Results are identical for any thread count.
 - **JSON run summary** with read counts, a score histogram and damage tables, designed for MultiQC.
@@ -175,12 +175,16 @@ Methods and full results: [docs/blackbox.md](docs/blackbox.md).
 
 ### Differences that change scores
 
-pmdshodh corrects two PMDtools behaviours by default. Use `--pmdtools-compat` to reproduce them.
+pmdshodh corrects these PMDtools behaviours by default. Use `--pmdtools-compat` to reproduce them.
 
 | PMDtools 0.60 behaviour | Effect | pmdshodh default |
 |---|---|---|
 | The reference is rebuilt wrongly for reads that combine an insertion or soft clip with a deletion or `=` CIGAR operations | Deleted bases are scored against later read bases, and positions shift | Reference rebuilt correctly from CIGAR and MD |
 | CpG context wraps around the read ends in `--CpG` and `--UDGhalf` modes | Changed 6% of read scores (up to 1.62) on the human UDG test BAM | No wrap-around |
+| `--ss` counts every C site twice (the double-stranded term plus the paper's single-stranded term, SI Eq. S1) | ss scores are about twice as large as the model gives, and lopsided: a terminal C→T scores 9.68 at the 5′ end and 6.34 at the 3′ end (Q40), so a threshold of 3 is far looser than for ds libraries | One term per C site (Eq. S1): 4.65 at either end. **ss scores are lower than PMDtools'; re-check thresholds tuned on PMDtools ss scores** |
+| `--upperthreshold` keeps reads with no informative sites (score 0) | Reads with no C/G evidence at all are output as "non-damaged" | Not kept by `--upper-threshold` (still counted as `no_informative_sites`) |
+| Lowercase reference bases in MD (outside the SAM spec) are never counted as C or G | 339 of 14.0 M reads scored differently on a public horse BAM (ENA ERR1892229) | Read as uppercase |
+| On reverse-strand reads, MD characters other than `ACGTNRY`/`acgt` (e.g. lowercase `n`) are dropped when the reference is reverse-complemented | The reference shifts against the read; scores up to 15.7 too high | No shift |
 
 **In CpG modes, expect pmdshodh's default results to differ from PMDtools on some reads.**
 
@@ -201,7 +205,6 @@ pmdshodh corrects two PMDtools behaviours by default. Use `--pmdtools-compat` to
 These are part of PMDtools' score as computed, and pmdshodh keeps them so that scores mean the same:
 
 - The no-damage model assumes a background damage rate of 0.001.
-- In single-stranded mode, each C site contributes two terms, so ss scores are on a larger scale than ds scores.
 - Reads are scored regardless of SAM flags (duplicates, secondary and supplementary alignments, paired reads). Remove unwanted reads beforehand; the summary counts them.
 
 The complete list, with reasoning: [docs/design.md](docs/design.md) §5.

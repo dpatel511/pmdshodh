@@ -597,3 +597,33 @@ fn reverse_read_lowercase_n_shift_only_in_pmdtools_compat() {
     assert!(close(single_score(&rev_n, &[]), -0.5514281743729341));
     assert!(close(single_score(&fwd_n, &compat), -0.30397668401849764));
 }
+
+// Departure from PMDtools (docs/design.md §5): a read with no informative sites scores 0 but
+// carries no evidence, so --upper-threshold does not keep it. PMDtools (and --pmdtools-compat)
+// keeps it.
+#[test]
+fn upper_threshold_drops_reads_without_evidence_except_in_compat() {
+    let dir = tmp_dir("upper_threshold");
+    let input = dir.join("two.sam");
+    let (a, q) = ("A".repeat(30), "I".repeat(30));
+    let c = format!("C{}", "A".repeat(29));
+    fs::write(
+        &input,
+        format!(
+            "@SQ\tSN:r\tLN:1000\nno_sites\t0\tr\t100\t60\t30M\t*\t0\t0\t{a}\t{q}\tMD:Z:30\n\
+             one_match\t0\tr\t200\t60\t30M\t*\t0\t0\t{c}\t{q}\tMD:Z:30\n"
+        ),
+    )
+    .unwrap();
+    let kept = |extra: &[&str]| -> Vec<String> {
+        let out = dir.join("kept.sam");
+        let mut args = vec!["filter", "--quiet", "--upper-threshold", "1"];
+        args.extend_from_slice(extra);
+        args.extend([input.to_str().unwrap(), "-o", out.to_str().unwrap()]);
+        let o = run(&args);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        read_records(&out).1.iter().map(name).collect()
+    };
+    assert_eq!(kept(&[]), ["one_match"]);
+    assert_eq!(kept(&["--pmdtools-compat"]), ["no_sites", "one_match"]);
+}

@@ -168,6 +168,8 @@ The rule reproduces **all 1,500** reads' PMDtools scores to ≤ 2.3e-14 (ds mode
 
 None of these is a "bug" in a proven sense. They are what the released program does. For parity, pmdshodh must reproduce 1–5 by default and document them. Any change (e.g. a paper-exact `--ss`) must be opt-in and never called "the PMDtools score" (CLAUDE.md §7).
 
+**Decision 2026-11-13:** 3 and 4 are treated as errors and fixed by default: `--ss` scores each C site once (Eq. S1, keeping the 0.001 null background, so a terminal C→T scores 4.65 rather than the 5.05 of the paper's D = 0 null), and `--upper-threshold` does not keep reads with no informative sites. `--pmdtools-compat` keeps PMDtools' behaviour for both (docs/design.md §5).
+
 ## 3. Reported issues: reproduction status
 
 | Issue | Status | Evidence | pmdshodh behaviour to adopt |
@@ -212,7 +214,7 @@ None of these is a "bug" in a proven sense. They are what the released program d
    - **Missing MD:** PMDtools drops silently; CLAUDE.md requires an error. Proposed: error by default, documented as a departure.
    - **Flags:** PMDtools scores unmapped, secondary, supplementary, QC-fail and duplicate reads. Proposed: match by default for parity, but count them in the summary. An opt-in flag skips them.
    - **Hard-clipped and 1-bp reads:** PMDtools drops them. Proposed: score hard-clipped reads (hard clips are not in SEQ, so z is unaffected). Documented departure: it fixes data loss, and kept reads would differ from PMDtools output.
-   - **`--ss` double counting:** match by default for parity. Offer a paper-exact S1 score only as an explicitly named alternative, if at all.
+   - **`--ss` double counting:** match by default for parity. Offer a paper-exact S1 score only as an explicitly named alternative, if at all. *Superseded 2026-11-13: Eq. S1 alone is the default; see §2.*
    - **No `@PG` line:** pmdshodh adds one (allowed by CLAUDE.md §7). Records stay byte-identical, so BAM content differs from PMDtools only in the header.
 4. **Score tag:** PMDtools writes 3-decimal text (`DS:Z`). A float tag (`f`) keeps full precision. Still for you to decide (features.md §5).
 5. **eager 2.5.3 `--CpG` for non-UDG libraries** (features.md §2.2). Section 1.5 now shows the consequence if the inference is right: only CpG C/G sites are scored, so most damage evidence on non-UDG reads is ignored. The Groovy behaviour itself was not executed. Telling eager is your call.

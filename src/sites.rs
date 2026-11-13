@@ -3,7 +3,7 @@
 //! Behaviour follows PMDtools 0.60 as measured in docs/blackbox.md (sections 1.2, 1.4, 1.5, 1.6b),
 //! except for the departures listed in docs/design.md section 5.
 
-use crate::model::{Params, site_term_ds, site_term_ss};
+use crate::model::{Params, site_term_ds, site_term_s1, site_term_ss};
 
 /// Library preparation, which decides which mismatches count as damage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -404,7 +404,11 @@ pub fn score_read(
                 };
                 if keep {
                     let (z, y) = ((i + 1) as u32, (n - i) as u32);
-                    score.pmds += site_term_ss(b == b'C', z, y, q, &s.params);
+                    score.pmds += if s.pmdtools_compat {
+                        site_term_ss(b == b'C', z, y, q, &s.params)
+                    } else {
+                        site_term_s1(b == b'C', z, y, q, &s.params)
+                    };
                     score.n_sites += 1;
                 }
             }
@@ -571,8 +575,17 @@ mod tests {
         // Forward: C→T at the first base. Reverse: SAM G→A at the last base is the molecule's 5′ C→T.
         let fwd = score(&format!("T{a}"), &format!("C{a}"), false, &ss).pmds;
         let rev = score(&format!("{a}A"), &format!("{a}G"), true, &ss).pmds;
-        assert!(close(fwd, 9.681909363978177));
-        assert!(close(rev, 9.681909363978177));
+        // Default: Eq. S1 alone. --pmdtools-compat: PMDtools 0.60's double-counted 9.68.
+        assert!(close(fwd, 4.65219207891691));
+        assert!(close(rev, 4.65219207891691));
+        let compat = Settings {
+            pmdtools_compat: true,
+            ..ss
+        };
+        assert!(close(
+            score(&format!("T{a}"), &format!("C{a}"), false, &compat).pmds,
+            9.681909363978177
+        ));
         // G→A on a forward read is not damage in ss mode.
         assert_eq!(
             score(&format!("{a}A"), &format!("{a}G"), false, &ss).n_sites,

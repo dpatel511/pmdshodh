@@ -116,12 +116,12 @@ Default = PMDtools behaviour, except where marked. Every departure gets a regres
 | MD that contradicts the CIGAR (length or base) | scored silently | error, exit 2 | **yes** |
 | Hard-clipped read (`H`) | dropped, stderr message | scored (hard clips are not in SEQ, so z is unaffected) | **yes** (D3) |
 | 1-bp read | dropped silently | scored | **yes** (trivial) |
-| Read with no informative sites | PMDS 0, kept at threshold ≤ 0 | same; counted as `no_informative_sites` | no |
+| Read with no informative sites | PMDS 0, kept at threshold ≤ 0 and by `--upperthreshold` | PMDS 0, counted as `no_informative_sites`; kept at `--threshold` ≤ 0, but **not kept by `--upper-threshold`** (no evidence of being undamaged); `--pmdtools-compat` keeps it (agreed 2026-11-13) | **yes** (`--upper-threshold` only) |
 | Secondary, supplementary, duplicate, QC-fail, paired mates | all scored | all scored by default, counted in summary; `--skip-flags` to drop | no (D2) |
 | Existing `DS:Z` tag in input | **crash** unless `--writesamfield` | left untouched; scoring unaffected | **yes**, fixes a crash |
 | `DS:Z:` text inside QUAL (issue #9) | crash | not an issue (field-aware parsing) | **yes**, fixes #9 |
 | Empty or header-only input | **crash**, exit 1 | empty output with header, zero-count summary, exit 0 | **yes** |
-| `--ss` scoring | each C site counted twice (ds term + S1 term) | **same by default** (parity), documented in limitations | no |
+| `--ss` scoring | each C site counted twice (ds term + S1 term): terminal C→T 9.68 at the 5′ end, 6.34 at the 3′ end (Q40) | **one term per site (SI Eq. S1, null background 0.001)**: 4.65 at either end; `--pmdtools-compat` double-counts (agreed 2026-11-13) | **yes** |
 | Reference rebuilt for reads combining `I`/`S` with `D` or `=` (blackbox.md 1.6c) | wrong: deleted bases scored against later read bases, positions shifted | **correct by default**; `--pmdtools-compat` reproduces PMDtools (agreed 2026-11-11) | **yes** |
 | CpG context at the read ends | wraps around (first G of a forward read, last C of a reverse read) | no wrap by default; `--pmdtools-compat` wraps. Kept as default after real data showed it changes 6% of UDG-data scores (blackbox.md §7; agreed 2026-11-11). Must be stated prominently in user docs. | **yes** |
 | Lowercase bases in SAM SEQ | not recognised | treated as uppercase (BAM cannot store lowercase) | **yes** (SAM only) |
