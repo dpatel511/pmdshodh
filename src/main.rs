@@ -9,7 +9,7 @@ use noodles_util::alignment;
 use noodles::sam::alignment::Record as _;
 use pmdshodh::damage::DamageCounts;
 use pmdshodh::model::Params;
-use pmdshodh::reads::{Outcome, ReadFilters, SkipReason, process};
+use pmdshodh::reads::{Outcome, ReadFilters, SkipReason, process, process_bam};
 use pmdshodh::sites::ReadScore;
 use pmdshodh::sites::{Library, Settings, Treatment};
 use pmdshodh::summary::{RunInfo, Summary};
@@ -371,7 +371,12 @@ fn scan(
                 let mut damage = DamageCounts::new(range);
                 let outcomes = records
                     .iter()
-                    .map(|r| process(r, settings, filters, Some(&mut damage)))
+                    .map(|r| match r {
+                        AlignmentRecord::Bam(b) => {
+                            process_bam(b, settings, filters, Some(&mut damage))
+                        }
+                        _ => process(r, settings, filters, Some(&mut damage)),
+                    })
                     .collect();
                 (outcomes, damage)
             })

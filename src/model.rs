@@ -69,7 +69,58 @@ fn log_ratio(is_match: bool, p_ancient: f64, p_null: f64) -> f64 {
 
 /// Double-stranded score term of one informative site at distance `z` with base quality `q`.
 /// `is_match` is false for a C→T (or G→A) mismatch.
+///
+/// Terms for the run's parameters are precomputed once ([`DsTable`]); values outside the table,
+/// or a different parameter set, are computed directly. Both give bit-identical results.
 pub fn site_term_ds(is_match: bool, z: u32, q: u8, params: &Params) -> f64 {
+    let table = ((1..=DsTable::MAX_Z).contains(&z) && q <= DsTable::MAX_Q)
+        .then(|| DsTable::for_params(params))
+        .flatten();
+    match table {
+        Some(table) => table.get(is_match, z, q),
+        None => site_term_ds_direct(is_match, z, q, params),
+    }
+}
+
+/// Precomputed double-stranded terms for one parameter set, indexed by match, z and q.
+struct DsTable {
+    params: Params,
+    terms: Vec<f64>,
+}
+
+impl DsTable {
+    const MAX_Z: u32 = 256;
+    /// Highest base quality in the table (Illumina/SAM practice; higher values are computed).
+    const MAX_Q: u8 = 93;
+    const N_Q: usize = Self::MAX_Q as usize + 1;
+
+    fn new(params: Params) -> Self {
+        let mut terms = Vec::with_capacity(2 * Self::MAX_Z as usize * Self::N_Q);
+        for is_match in [false, true] {
+            for z in 1..=Self::MAX_Z {
+                for q in 0..=Self::MAX_Q {
+                    terms.push(site_term_ds_direct(is_match, z, q, &params));
+                }
+            }
+        }
+        DsTable { params, terms }
+    }
+
+    /// The table for `params`, built on first use. One run uses one parameter set; if another
+    /// set is asked for later (e.g. in tests), it gets `None` and its terms are computed.
+    fn for_params(params: &Params) -> Option<&'static DsTable> {
+        static TABLE: std::sync::OnceLock<DsTable> = std::sync::OnceLock::new();
+        let table = TABLE.get_or_init(|| DsTable::new(*params));
+        (table.params == *params).then_some(table)
+    }
+
+    fn get(&self, is_match: bool, z: u32, q: u8) -> f64 {
+        let row = usize::from(is_match) * Self::MAX_Z as usize + (z as usize - 1);
+        self.terms[row * Self::N_Q + usize::from(q)]
+    }
+}
+
+fn site_term_ds_direct(is_match: bool, z: u32, q: u8, params: &Params) -> f64 {
     let e = error_rate(q);
     log_ratio(
         is_match,
@@ -141,6 +192,39 @@ mod tests {
             site_term_ss(true, 1, 30, 40, &p),
             -0.7491557655766737
         ));
+    }
+
+    #[test]
+    fn ds_table_is_bit_identical_to_direct_computation() {
+        let other = Params {
+            p: 0.5,
+            c: 0.02,
+            pi_ancient: 0.002,
+            pi_contamination: 0.003,
+        };
+        for params in [Params::default(), other] {
+            let table = DsTable::new(params);
+            for is_match in [false, true] {
+                for z in 1..=DsTable::MAX_Z {
+                    for q in 0..=DsTable::MAX_Q {
+                        assert_eq!(
+                            table.get(is_match, z, q).to_bits(),
+                            site_term_ds_direct(is_match, z, q, &params).to_bits()
+                        );
+                    }
+                }
+            }
+        }
+        // Outside the table, and for a second parameter set, terms are computed directly.
+        let p = Params::default();
+        assert_eq!(
+            site_term_ds(false, 1000, 40, &p).to_bits(),
+            site_term_ds_direct(false, 1000, 40, &p).to_bits()
+        );
+        assert_eq!(
+            site_term_ds(true, 5, 255, &other).to_bits(),
+            site_term_ds_direct(true, 5, 255, &other).to_bits()
+        );
     }
 
     // Departure from PMDtools (docs/design.md §5): the default --ss term is Eq. S1 alone, one
