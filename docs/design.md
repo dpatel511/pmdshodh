@@ -191,8 +191,9 @@ Notes:
   - records are read in batches of 10,000;
   - each batch is scored in parallel chunks on a rayon pool of `-@` threads, with per-chunk damage counts summed afterwards;
   - results are applied in input order;
+  - with `-@` above 1, the stages overlap (2026-11-13): a reader thread reads batch k+2 and a scoring thread scores batch k+1 while the main thread applies batch k, so at most three batches are in flight. With `-@ 1` the stages run one after another, as before;
   - BGZF input is decompressed, and BAM output compressed, by noodles' multithreaded BGZF reader and writer. BAM always uses the multithreaded writer, so the block layout does not depend on `-@`.
-  - No speed has been measured yet.
+  - Measured speed: docs/benchmarks.md.
 - **Benchmark protocol for later speed claims:**
   - same machine, same input;
   - PMDtools 0.60 (Bioconda, with its `samtools calmd`/`view` pipe as in nf-core), metaDMG-cpp `pmd`, pmdshodh at 1, 4 and 8 threads;

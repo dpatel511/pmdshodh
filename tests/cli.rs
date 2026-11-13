@@ -672,3 +672,83 @@ fn bam_and_sam_input_give_identical_scores_and_damage() {
         );
     }
 }
+
+/// A SAM file of `n` 30-bp reads (several batches of 10,000), with optional broken lines:
+/// `no_md` drops the MD tag of that read; `garbage` replaces that line with an unparsable one.
+fn many_reads_sam(path: &Path, n: usize, no_md: Option<usize>, garbage: Option<usize>) {
+    let (seq, qual) = (format!("T{}", "A".repeat(29)), "I".repeat(30));
+    let mut sam = String::from("@HD\tVN:1.6\n@SQ\tSN:c\tLN:100000\n");
+    for i in 1..=n {
+        let md = if Some(i) == no_md { "" } else { "\tMD:Z:0C29" };
+        if Some(i) == garbage {
+            sam.push_str("garbage\tline\n");
+        } else {
+            sam.push_str(&format!(
+                "r{i}\t0\tc\t{i}\t37\t30M\t*\t0\t0\t{seq}\t{qual}{md}\n"
+            ));
+        }
+    }
+    fs::write(path, sam).unwrap();
+}
+
+// With several threads, reading, scoring and output overlap (main.rs scan). Errors must still be
+// reported in input order, stop the run with exit 2 and leave no output, as with one thread.
+#[test]
+fn errors_are_reported_in_input_order_with_any_thread_count() {
+    let dir = tmp_dir("pipeline_errors");
+    let both = dir.join("both.sam");
+    many_reads_sam(&both, 25_000, Some(12_000), Some(21_000));
+    let parse_only = dir.join("parse.sam");
+    many_reads_sam(&parse_only, 25_000, None, Some(21_000));
+    for threads in ["1", "4"] {
+        for (input, expect) in [(&both, "read r12000"), (&parse_only, "record 21000")] {
+            let out = dir.join("out.bam");
+            let o = run(&[
+                "filter",
+                "-t",
+                "0",
+                "-@",
+                threads,
+                input.to_str().unwrap(),
+                "-o",
+                out.to_str().unwrap(),
+            ]);
+            let err = String::from_utf8_lossy(&o.stderr);
+            assert_eq!(o.status.code(), Some(2), "-@ {threads}: {err}");
+            assert!(
+                err.contains(expect),
+                "-@ {threads}: expected {expect:?} in {err}"
+            );
+            assert!(
+                !out.exists(),
+                "-@ {threads}: no output under the final name"
+            );
+        }
+    }
+}
+
+#[test]
+fn multi_batch_results_do_not_depend_on_thread_count() {
+    let dir = tmp_dir("pipeline_batches");
+    let input = dir.join("many.sam");
+    many_reads_sam(&input, 25_000, None, None);
+    let summary = |threads: &str, extra: &[&str]| {
+        let mut args = vec!["damage", "--quiet", "-@", threads];
+        args.extend_from_slice(extra);
+        args.push(input.to_str().unwrap());
+        let o = run(&args);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        let mut json: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+        json.as_object_mut().unwrap().remove("command");
+        json
+    };
+    for extra in [&[][..], &["-n", "15000"]] {
+        let one = summary("1", extra);
+        assert_eq!(one, summary("4", extra), "{extra:?}");
+        let expected = if extra.is_empty() { 25_000 } else { 15_000 };
+        assert_eq!(one["reads"]["input"], expected);
+    }
+    let scores =
+        |threads: &str| run(&["score", "--quiet", "-@", threads, input.to_str().unwrap()]).stdout;
+    assert_eq!(scores("1"), scores("4"));
+}
