@@ -346,11 +346,13 @@ fn scan(
     settings: &Settings,
     filters: &ReadFilters,
     summary: &mut Summary,
+    count_damage: bool,
     max_reads: Option<u64>,
     threads: usize,
     mut on_scored: impl FnMut(&AlignmentRecord, &ReadScore) -> Result<Option<bool>, Failure> + Send,
 ) -> Result<(), Failure> {
-    let range = summary.damage.range;
+    // Damage tables are only written to the JSON summary; counting them is a quarter of the work.
+    let range = count_damage.then_some(summary.damage.range);
     if threads == 1 {
         let mut n_read = 0u64;
         loop {
@@ -415,8 +417,9 @@ fn scan(
 /// Batches scored on the pool while the serial thread consumes an older one (several threads).
 const SCORED_AHEAD: usize = 2;
 
-/// Outcomes and damage counts of one batch, in input order, one entry per scoring chunk.
-type Scored = Vec<(Vec<Result<Outcome, String>>, DamageCounts)>;
+/// Outcomes and damage counts (if counted) of one batch, in input order, one entry per scoring
+/// chunk.
+type Scored = Vec<(Vec<Result<Outcome, String>>, Option<DamageCounts>)>;
 
 /// Read up to [`BATCH`] records; an empty batch means the end of the input (or of `max_reads`).
 fn read_batch(
@@ -444,19 +447,19 @@ fn score_batch(
     batch: &[AlignmentRecord],
     settings: &Settings,
     filters: &ReadFilters,
-    range: usize,
+    range: Option<usize>,
 ) -> Scored {
     use rayon::prelude::*;
     let chunk = batch.len().div_ceil(rayon::current_num_threads()).max(1);
     batch
         .par_chunks(chunk)
         .map(|records| {
-            let mut damage = DamageCounts::new(range);
+            let mut damage = range.map(DamageCounts::new);
             let outcomes = records
                 .iter()
                 .map(|r| match r {
-                    AlignmentRecord::Bam(b) => process_bam(b, settings, filters, Some(&mut damage)),
-                    _ => process(r, settings, filters, Some(&mut damage)),
+                    AlignmentRecord::Bam(b) => process_bam(b, settings, filters, damage.as_mut()),
+                    _ => process(r, settings, filters, damage.as_mut()),
                 })
                 .collect();
             (outcomes, damage)
@@ -494,7 +497,7 @@ fn consume_batch(
             }
         }
     }
-    for (_, damage) in parts {
+    for damage in parts.iter().filter_map(|(_, d)| d.as_ref()) {
         summary.damage.merge(damage);
     }
     Ok(())
@@ -602,6 +605,7 @@ fn run_score(args: &ScoreArgs) -> Result<(), Failure> {
         &settings,
         &filters,
         &mut summary,
+        args.summary.summary.is_some(),
         None,
         args.model.threads,
         |record, s| {
@@ -641,6 +645,7 @@ fn run_damage(args: &DamageArgs) -> Result<(), Failure> {
         &settings,
         &filters,
         &mut summary,
+        true,
         args.max_reads,
         args.model.threads,
         |_, _| Ok(None),
@@ -781,6 +786,7 @@ fn run_filter(args: &FilterArgs) -> Result<(), Failure> {
         &settings,
         &filters,
         &mut summary,
+        args.summary.summary.is_some(),
         None,
         args.model.threads,
         |record, score| {
