@@ -1,8 +1,8 @@
-# Benchmarks — preliminary, 2026-11-12
+# Benchmarks — 2026-11-13
 
-**Status: preliminary.** Each configuration ran **3 times**, not the 5 that [benchmark-plan.md](benchmark-plan.md) asks for, on one laptop. The pmdshodh build was commit `a98ae07`, which predates the scoring changes of PRs #6 and #7. Those PRs don't change double-stranded default scoring, so the default timings should still apply; that isn't measured. A 5-run benchmark on the final build will replace these numbers.
+Each configuration ran **5 times** on one laptop, following [benchmark-plan.md](benchmark-plan.md). The pmdshodh build was commit `b14f4ee`, which includes the speed work of PRs #9 and #10. All times are medians of 5 runs unless a row says otherwise.
 
-All numbers are medians of 3 runs. `run.sh` writes the raw logs (commands, `/usr/bin/time -v` output, stderr, and a per-run `times.tsv` with the min–max range), and `check.py` writes `summary.tsv` and `checks.tsv`. The logs for this round are kept with the benchmark machine and are not committed. The scripts are [benchmarks/run.sh](benchmarks/run.sh) and [benchmarks/check.py](benchmarks/check.py).
+`run.sh` writes the raw logs: commands, `/usr/bin/time -v` output, stderr, and a per-run `times.tsv` with the min–max range. `check.py` writes `summary.tsv` and `checks.tsv`. The logs are kept with the benchmark machine and are not committed. The scripts are [benchmarks/run.sh](benchmarks/run.sh) and [benchmarks/check.py](benchmarks/check.py).
 
 ## Setup
 
@@ -10,15 +10,16 @@ All numbers are medians of 3 runs. `run.sh` writes the raw logs (commands, `/usr
 |---|---|
 | CPU | Intel Core i5-13500H laptop: 12 cores (4 performance + 8 efficiency), 16 threads |
 | OS | WSL 2 (Linux 6.18.58.1-microsoft-standard-WSL2), Ubuntu 24.04, on Windows 11; WSL sees 7.6 GB RAM |
-| Power | On mains, Windows "Balanced" plan, sleep off |
+| Power | On mains, Windows "Balanced" plan, sleep off, other applications closed |
 | Storage | Inputs and outputs on the WSL ext4 disk (`~/bench`), not on `/mnt` |
 | Cache | Inputs read once with `cat` before each block of runs (warm cache) |
-| pmdshodh | 0.1.0, commit `a98ae074`, `cargo build --release` (Rust 1.99.1, default release profile) |
+| Clock | Wall time from `/proc/uptime` (monotonic), because the WSL wall clock that `/usr/bin/time` reads can jump by about 2 s. CPU time and peak memory come from `/usr/bin/time -v` |
+| pmdshodh | 0.1.0, commit `b14f4ee`, `cargo build --release` (Rust 1.99.1, default release profile) |
 | PMDtools | 0.60 (Bioconda tag archive, md5 `c059d7ab4c24e1ce00f1eee4c2a4b669`), Python 3.12.3 |
 | samtools | 1.25 (htslib 1.25), Bioconda |
 | metaDMG-cpp | Bioconda package `metadmg` 0.5.3; the binary reports itself as 0.5.0 |
 
-Timings run one after another, never in parallel. The whole run took 5 h 45 min (2026-11-12 20:09 to 2026-11-13 01:54 UTC).
+Timings ran one after another, never in parallel. The whole run took 7 h 42 min (2026-11-13 18:52 to 2026-11-14 02:34 UTC).
 
 ## Inputs
 
@@ -60,7 +61,7 @@ pmdshodh score --quiet -@ N in.bam -o out.tsv                             # N = 
 metaDMG-cpp pmd -@ N in.bam > out.txt                                     # N = 1, 8
 ```
 
-Reproduce with `RUNS=3 INPUTS="BER11_L_NOuser Motala3" SYNTH="1M 10M 50M" bash docs/benchmarks/run.sh`, then `python3 docs/benchmarks/check.py WORK RESULTS BER11_L_NOuser Motala3`.
+Reproduce with `RUNS=5 INPUTS="BER11_L_NOuser Motala3" SYNTH="1M 10M 50M" bash docs/benchmarks/run.sh`, then `python3 docs/benchmarks/check.py WORK RESULTS BER11_L_NOuser Motala3`.
 
 ## Results
 
@@ -68,77 +69,81 @@ Reproduce with `RUNS=3 INPUTS="BER11_L_NOuser Motala3" SYNTH="1M 10M 50M" bash d
 
 | | BER11_L_NOuser (14.0 M reads) | Motala3 (23.6 M reads) |
 |---|---|---|
-| PMDtools pipeline | 1,596.8 s (26.6 min) | 2,161.4 s (36.0 min) |
-| pmdshodh `filter`, 1 thread | 84.0 s (**19.0×**) | 112.7 s (**19.2×**) |
-| pmdshodh `filter`, 8 threads | 18.6 s (85.8×) | 24.7 s (87.5×) |
-| pmdshodh `filter`, 12 threads | 17.5 s (91.2×) | 22.3 s (96.9×) |
-| pmdshodh `filter --pmdtools-compat`, 1 thread | 94.5 s | 131.9 s |
+| PMDtools pipeline | 1,579.1 s (26.3 min) | 2,129.0 s (35.5 min) |
+| pmdshodh `filter`, 1 thread | 51.0 s (**31.0×**) | 76.7 s (**27.8×**) |
+| pmdshodh `filter`, 8 threads | 10.2 s (155×) | 13.4 s (159×) |
+| pmdshodh `filter`, 12 threads | 10.2 s (155×) | 12.8 s (166×) |
+| pmdshodh `filter --pmdtools-compat`, 1 thread | 69.6 s (22.7×) | 98.1 s (21.7×) |
+| pmdshodh `filter --pmdtools-compat`, 8 threads | 13.0 s (121×) | 16.9 s (126×) |
 
-Speed-ups are relative to the PMDtools pipeline on the same input. The 1-thread rows are the like-for-like comparison of the scoring itself. The PMDtools pipeline uses about 1 CPU-second per wall-second (1,636 s CPU for BER11_L_NOuser). Compat mode is 12–17% slower than default on 1 thread.
+- Speed-ups are relative to the PMDtools pipeline on the same input.
+- The 1-thread rows are the like-for-like comparison of the scoring itself. The PMDtools pipeline uses about 1 CPU-second per wall-second (1,566 s CPU for BER11_L_NOuser).
+- PMDtools' 5 runs ranged from 1,490 to 1,630 s on BER11_L_NOuser and from 2,077 to 2,207 s on Motala3. Min–max ranges for every configuration are in `summary.tsv`. The widest pmdshodh range was `score -@ 8` on BER11_L_NOuser (11.6–18.1 s, one slow run).
+- Compat mode is 28–37% slower than default on 1 thread. The speed work of PRs #9 and #10 helped the default path more than compat's reference reconstruction.
 
 ### Thread scaling (`pmdshodh filter`)
 
-| Threads | BER11_L_NOuser | Speed-up | Motala3 | Speed-up |
-|---|---|---|---|---|
-| 1 | 84.0 s | 1.00× | 112.7 s | 1.00× |
-| 2 | 40.0 s | 2.10× | 52.4 s | 2.15× |
-| 4 | 27.9 s | 3.01× | 30.1 s | 3.74× |
-| 8 | 18.6 s | 4.52× | 24.7 s | 4.56× |
-| 12 | 17.5 s | 4.80× | 22.3 s | 5.05× |
+| `-@` | BER11_L_NOuser | Speed-up | CPU cores used | Motala3 | Speed-up | CPU cores used |
+|---|---|---|---|---|---|---|
+| 1 | 51.0 s | 1.00× | 1.2 | 76.7 s | 1.00× | 1.1 |
+| 2 | 20.5 s | 2.49× | 3.1 | 27.9 s | 2.75× | 2.9 |
+| 4 | 14.1 s | 3.62× | 5.7 | 18.1 s | 4.24× | 5.3 |
+| 8 | 10.2 s | 5.00× | 9.2 | 13.4 s | 5.72× | 8.9 |
+| 12 | 10.2 s | 5.00× | 9.4 | 12.8 s | 5.99× | 9.5 |
 
-- Going from 1 to 2 threads is more than 2× faster. `-@` sets both the scoring threads and the BGZF compression workers, which probably explains it; I haven't measured that.
-- Scaling flattens after 8 threads. The CPU has 4 performance cores, and reading and writing records runs on a single thread in the current code.
+- "CPU cores used" is median CPU time (user + system) divided by median wall time.
+- **`-@ N` uses more than N cores.** Above 1, reading, scoring and writing run in separate threads, in addition to the N scoring and BGZF threads. This is why going from 1 to 2 is more than 2× faster. Even `-@ 1` uses slightly more than one core.
+- Scaling flattens after 8 threads. The CPU has 4 performance cores, and the reader and writer are each a single thread.
 
 ### Per-read scores: pmdshodh vs metaDMG
 
 | | BER11_L_NOuser | Motala3 |
 |---|---|---|
-| metaDMG `pmd`, `-@ 1` | **56.2 s** | **84.8 s** |
-| metaDMG `pmd`, `-@ 8` | 56.5 s | 81.3 s |
-| pmdshodh `score`, 1 thread | 84.3 s | 121.0 s |
-| pmdshodh `score`, 8 threads | 25.0 s | 38.3 s |
+| metaDMG `pmd`, `-@ 1` | **54.4 s** | **81.2 s** |
+| metaDMG `pmd`, `-@ 8` | 51.9 s | 81.6 s |
+| pmdshodh `score`, 1 thread | 58.9 s | 87.4 s |
+| pmdshodh `score`, 8 threads | 12.5 s | 16.5 s |
 
-- **On one thread, metaDMG is faster**: 1.50× on BER11_L_NOuser and 1.43× on Motala3.
-- metaDMG's `-@` option made no difference to its time. Its output was identical for `-@ 1` and `-@ 8`.
-- pmdshodh with 8 threads is 2.2× faster than metaDMG.
+- **On one thread, metaDMG is still faster**, by 8% on both inputs (1.08× on each). The two tools alternated run by run, and metaDMG was faster in every one of the 5 pairs on both inputs.
+- metaDMG's `-@` option made almost no difference to its time. Its output was identical for `-@ 1` and `-@ 8`.
+- pmdshodh with 8 threads is 4.2× faster than metaDMG on BER11_L_NOuser and 4.9× faster on Motala3.
 - The two tools don't compute the same score, so this compares speed only.
+- `score` takes longer than `filter` because it writes a line for every read (14–24 M lines), whereas `filter` writes only the kept reads.
 
 ### Memory
 
-Peak resident memory (`/usr/bin/time -v`, median of 3):
+Peak resident memory (`/usr/bin/time -v`, median of 5):
 
 | | 1 thread | 8 threads |
 |---|---|---|
-| pmdshodh `filter`, BER11_L_NOuser / Motala3 | 11 MB / 11 MB | 16 MB / 14 MB |
-| pmdshodh `filter`, synthetic 1 M / 10 M / 50 M reads | 11 / 11 / 11 MB | 14 / 15 / 16 MB |
-| metaDMG `pmd` | 10–11 MB | 10–11 MB |
+| pmdshodh `filter`, BER11_L_NOuser / Motala3 | 12 MB / 11 MB | 28 MB / 25 MB |
+| pmdshodh `filter`, synthetic 1 M / 10 M / 50 M reads | 12 / 12 / 12 MB | 27 / 27 / 28 MB |
+| pmdshodh `score`, BER11_L_NOuser / Motala3 | 11 MB / 10 MB | 22 MB / 21 MB |
+| metaDMG `pmd` | 10–11 MB | 10 MB |
 | PMDtools pipeline, largest single process | 15 MB | — |
 
-- **pmdshodh's memory does not grow with input size.** On the synthetic inputs, its time is also linear: 5.8, 5.75 and 5.76 s per million reads on 1 thread, and 1.30, 1.26 and 1.27 s on 8 threads.
+- **pmdshodh's memory does not grow with input size.** With several threads it holds up to three batches of records at once, so memory is higher than on one thread, but it is bounded.
+- On the synthetic inputs, its time is also linear. On 1 thread it took 4.00, 4.06 and 4.04 s per million reads; on 8 threads, 0.70, 0.68 and 0.68 s.
 - For the PMDtools pipeline, `/usr/bin/time` reports the largest single process, not the pipeline's total.
 
 ## Correctness checks
 
-Run on every benchmark input with `check.py`. The tables below are taken from its output for the original run and for the rerun after the fix.
+Run on every benchmark input with `check.py`. All checks passed.
 
 | Check | BER11_L_NOuser | Motala3 |
 |---|---|---|
-| Per-read scores: PMDtools `--printDS` vs pmdshodh `score --pmdtools-compat` (tolerance 1e-6) | 14,006,183 reads, largest difference 6.0e-14 | 23,622,338 reads, largest difference 5.0e-14 |
+| Per-read scores: PMDtools `--printDS` vs pmdshodh `score --pmdtools-compat` (tolerance 1e-6) | 14,006,183 reads, largest difference 6.0e-14, 0 above tolerance | 23,622,338 reads, largest difference 5.0e-14, 0 above tolerance |
 | Kept reads: PMDtools vs `filter --pmdtools-compat` (whole records, in order) | 1,031,193, identical including tags | 301,867, identical including tags |
-| `filter` output identical for 1, 2, 4, 8 and 12 threads; `score` for 1 and 8 | pass | pass |
-
-**This check failed on the original run** for BER11_L_NOuser:
-- 339 reads had different scores (largest difference 15.7), and 35 more reads were kept than PMDtools keeps.
-- The cause was two PMDtools behaviours with unusual MD tags that compat mode did not yet reproduce: lowercase reference bases, and characters dropped on reverse-strand reads (docs/blackbox.md).
-- PR #6 fixed compat mode. The compat-mode outputs were then regenerated with that code and checked against the same PMDtools outputs, giving the table above. Those regenerated runs were not timed.
+| `filter` output identical for 1, 2, 4, 8 and 12 threads | 1,029,380 records each | 301,722 records each |
+| `filter --pmdtools-compat` and `score` identical for 1 and 8 threads | pass | pass |
 
 **Default mode vs PMDtools** (kept reads at PMD ≥ 3):
 - BER11_L_NOuser: 1,907 reads kept only by PMDtools, 94 only by pmdshodh, 1,029,286 by both.
 - Motala3: 242, 97 and 301,625.
 
-Every read whose default score differs from PMDtools' comes from a documented departure (docs/design.md §5). None are unexplained:
+These counts are the same as in the preliminary round (2026-11-12, commit `a98ae07`). In that round, every read whose default score differed from PMDtools' was traced to a documented departure (docs/design.md §5), with none unexplained. That classification was not rerun on this round's outputs.
 
-| Cause of the difference | BER11_L_NOuser | of which cross PMD 3 | Motala3 | of which cross PMD 3 |
+| Cause of the difference (preliminary round) | BER11_L_NOuser | of which cross PMD 3 | Motala3 | of which cross PMD 3 |
 |---|---|---|---|---|
 | CIGAR reconstruction fix (`I`/`S` with `D`/`=`) | 3,983 | 1,960 | 3,757 | 339 |
 | Lowercase MD bases | 336 | 38 | 0 | 0 |
@@ -146,25 +151,14 @@ Every read whose default score differs from PMDtools' comes from a documented de
 | CIGAR fix + lowercase MD | 2 | 0 | 0 | 0 |
 | **Unexplained** | **0** | | **0** | |
 
+## Compared with the preliminary round
+
+A preliminary round ran 3 times per configuration on commit `a98ae07` (2026-11-12). Its single-thread `filter` medians were 84.0 s (BER11_L_NOuser) and 112.7 s (Motala3), against 51.0 s and 76.7 s here. Its 8-thread medians were 18.6 s and 24.7 s, against 10.2 s and 13.4 s.
+
+The two rounds weren't interleaved and the earlier one timed with the WSL wall clock, so this is not a controlled comparison. The controlled before/after measurements of the speed work are in the CHANGELOG. The preliminary round's PMDtools compat-mode check initially failed on 339 reads; PR #6 fixed the cause before this round.
+
 ## Departures from the plan
 
-- **3 runs per configuration instead of 5**, for this preliminary round.
 - **No PMDtools run with `samtools calmd`.** All inputs already have MD tags, and this run would have needed two reference genomes.
 - **`--printDS` and the compat `score` were run once each.** They exist for the parity check.
 - **`--ss` is not benchmarked.** No single-stranded library has been tested.
-
-## Speed notes for the next round
-
-These were measured on the first 2 M reads of BER11_L_NOuser, 1 thread, 3 runs each, on an experimental copy. They're not in the released code yet.
-
-| | Time |
-|---|---|
-| | Median time |
-|---|---|
-| htslib decoding (`samtools view -c`) | 1.08 s |
-| pmdshodh `score` (`a98ae07`) | 12.46 s |
-| with precomputed site terms (output byte-identical) | 9.19 s |
-| … and damage counting turned off | 6.87 s (7.01 s in a second set of 3 runs) |
-| … plus fat LTO, `codegen-units = 1` | 6.85 s: no clear gain; binary 3.95 → 2.94 MB |
-
-Turning damage counting off shows how much it costs at most. It is needed for the summary, so the real gain will be smaller.
