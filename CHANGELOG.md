@@ -17,6 +17,7 @@ Nothing has been released yet. The first release is planned as v0.1.0 (see [docs
 - Multi-threaded scoring and BGZF compression; output is identical for any thread count.
 - JSON run summary (`format_version` 1) with read counts, skipped reads by reason, a score histogram and damage tables.
 - Parity tests against PMDtools on synthetic and real reads.
+- Minimum supported Rust version 1.91 (the minimum of noodles 0.119), declared in `Cargo.toml` and tested in CI. The README used to say 1.85, which was never true.
 - README, design notes, benchmark plan and roadmap.
 
 ### Changed
@@ -34,7 +35,9 @@ Nothing has been released yet. The first release is planned as v0.1.0 (see [docs
     - `filter -t 3 -@ 12`: 1.25 s on 9.6 cores (before: 1.33 s on 10.2);
     - `filter -t 3 -@ 1`: 7.58 s → 8.43 s (it used to take 1.2 cores).
   - Peak memory at `-@ 8` is 33–38 MB, because up to four batches are in memory.
+- Errors for MD tags that disagree with the alignment now suggest recomputing MD with `samtools calmd`. Such tags are usually stale after realignment.
 
 ### Fixed
+- `--pmdtools-compat` with several threads no longer slows down 2–5× from contention on glibc's allocator lock. The shared thread pool above made this worse, and the fix sizes compat's per-read buffers up front instead of growing them. On BER11_L_NOuser (14.0 M reads, 5 alternating runs), `filter --pmdtools-compat -@ 8` took 10.8–11.8 s instead of 23.9–66.6 s. Scores are unchanged.
 - `score -o -` writes to stdout; it used to create a file named `-`.
 - `--pmdtools-compat` now also reproduces PMDtools 0.60 for lowercase reference bases in MD (never counted as C or G) and for reverse-strand reads whose MD contains characters PMDtools drops when reverse-complementing (e.g. lowercase `n`). Default scoring is unchanged; both are listed as departures in docs/design.md.

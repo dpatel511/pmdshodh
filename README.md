@@ -37,7 +37,7 @@ pmdshodh implements this score as a single program, with no `samtools calmd | py
 
 ## Installation
 
-pmdshodh is currently installed from source. It needs Rust 1.85 or newer (tested with 1.99.1).
+pmdshodh is currently installed from source. It needs Rust 1.91 or newer, the minimum of its noodles dependency. CI tests 1.91 and the latest stable.
 
 ```bash
 git clone https://github.com/dpatel511/pmdshodh.git
@@ -212,7 +212,7 @@ The complete list, with reasoning: [docs/design.md](docs/design.md) §5.
 ## Limitations
 
 - CRAM input is not yet supported.
-- Benchmarks cover one laptop and two double-stranded libraries: [docs/benchmarks.md](docs/benchmarks.md). On one thread, metaDMG `pmd` scores reads about 8% faster than `pmdshodh score`.
+- Benchmarks cover one laptop and two double-stranded libraries: [docs/benchmarks.md](docs/benchmarks.md). On one thread, metaDMG `pmd` scores reads 8–15% faster than `pmdshodh score`.
 - No real single-stranded library has been tested; single-stranded parity rests on synthetic reads.
 - UDG-half damage *tables* do not yet match PMDtools (UDG-half *scores* do).
 
