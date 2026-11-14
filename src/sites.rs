@@ -156,7 +156,9 @@ pub fn reference_along_read_pmdtools(
 
 fn pmdtools_reference_sam_order(seq: &[u8], cigar: &[CigarOp], md: &[u8]) -> Vec<Option<u8>> {
     // MD reference: None = matches the read, Some(base) = mismatch or deleted base.
-    let mut expansion: Vec<(Option<u8>, bool)> = Vec::new(); // (base, is_deleted)
+    // Vecs here are sized up front: growing them calls realloc, which always takes glibc's arena
+    // lock, and with several threads that contention made compat `-@ 8` 2-5x slower.
+    let mut expansion: Vec<(Option<u8>, bool)> = Vec::with_capacity(seq.len()); // (base, is_deleted)
     let mut i = 0;
     while i < md.len() {
         if md[i].is_ascii_digit() {
@@ -189,7 +191,8 @@ fn pmdtools_reference_sam_order(seq: &[u8], cigar: &[CigarOp], md: &[u8]) -> Vec
         .iter()
         .any(|op| matches!(op, CigarOp::Insertion(_) | CigarOp::SoftClip(_)));
     if simple {
-        let aligned: Vec<_> = expansion.iter().filter(|(_, del)| !del).collect();
+        let mut aligned = Vec::with_capacity(expansion.len());
+        aligned.extend(expansion.iter().filter(|(_, del)| !del));
         return (0..n).map(|i| fill(aligned.get(i).copied(), i)).collect();
     }
 
