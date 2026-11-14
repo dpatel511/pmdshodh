@@ -16,7 +16,7 @@ use pmdshodh::summary::{RunInfo, Summary};
 
 /// Per-read post-mortem damage (PMD) scores for ancient DNA alignments.
 #[derive(Parser)]
-#[command(name = "pmdshodh", version)]
+#[command(name = "pmdshodh", bin_name = "pmdshodh", version)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -25,25 +25,56 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Keep reads by PMD score and write them as SAM or BAM.
+    #[command(after_help = FILTER_EXAMPLES)]
     Filter(FilterArgs),
     /// Write a table of per-read PMD scores (TSV).
+    #[command(after_help = SCORE_EXAMPLES)]
     Score(ScoreArgs),
     /// Write the JSON run summary only: read counts, score histogram and damage table.
+    #[command(after_help = DAMAGE_EXAMPLES)]
     Damage(DamageArgs),
 }
+
+const FILTER_EXAMPLES: &str = "\
+Examples:
+  # Keep reads with PMD score >= 3, as
+  # samtools view -h in.bam | pmdtools --threshold 3 --header | samtools view -b -o out.bam -
+  pmdshodh filter -t 3 -@ 8 in.bam -o out.bam
+
+  # Single-stranded, UDG-half library; add the score as a pm tag and write a JSON summary
+  pmdshodh filter -t 3 --library ss --treatment half --tag --summary run.json in.bam -o out.bam
+
+  # In a pipe: SAM or BAM in on stdin, BAM out on stdout
+  samtools view -h -q 30 in.bam | pmdshodh filter -t 3 - -o - | samtools sort -o out.bam";
+
+const SCORE_EXAMPLES: &str = "\
+Examples:
+  # One line per read: read_name, flag, pmds, n_sites
+  pmdshodh score -@ 8 in.bam -o scores.tsv
+
+  # Scores as PMDtools 0.60 computes them, including its known bugs (for comparisons)
+  pmdshodh score --pmdtools-compat in.bam -o scores.tsv";
+
+const DAMAGE_EXAMPLES: &str = "\
+Examples:
+  # Substitution rates by position, score histogram and read counts as JSON
+  pmdshodh damage -@ 8 in.bam -o damage.json
+
+  # Only the first 100,000 reads (PMDtools -n)
+  pmdshodh damage -n 100000 in.bam -o damage.json";
 
 #[derive(Args)]
 struct DamageArgs {
     /// Input SAM or BAM file ("-" for stdin).
     input: PathBuf,
     /// Output JSON file (default: stdout).
-    #[arg(short, long)]
+    #[arg(help_heading = "Output", short, long)]
     output: Option<PathBuf>,
     /// Positions from each read end in the damage table (PMDtools --range).
-    #[arg(long, default_value_t = 30)]
+    #[arg(help_heading = "Summary", long, default_value_t = 30)]
     range: usize,
     /// Stop after this many input reads (PMDtools -n). Exits normally.
-    #[arg(short = 'n', long, visible_alias = "number")]
+    #[arg(help_heading = "Input", short = 'n', long, visible_alias = "number")]
     max_reads: Option<u64>,
     #[command(flatten)]
     model: ModelArgs,
@@ -58,23 +89,39 @@ struct FilterArgs {
     /// Input SAM or BAM file ("-" for stdin).
     input: PathBuf,
     /// Output file; format from the extension (.bam or .sam). "-" writes BAM to stdout.
-    #[arg(short, long)]
+    #[arg(help_heading = "Output", short, long)]
     output: PathBuf,
     /// Output format for stdout ("-o -").
-    #[arg(long, value_enum, default_value = "bam")]
+    #[arg(help_heading = "Output", long, value_enum, default_value = "bam")]
     output_format: OutputFormat,
     /// Keep reads with PMD score >= this (PMDtools -t/--threshold).
-    #[arg(short = 't', long, allow_negative_numbers = true)]
+    #[arg(
+        help_heading = "Filtering",
+        short = 't',
+        long,
+        allow_negative_numbers = true
+    )]
     threshold: Option<f64>,
     /// Keep reads with PMD score < this (PMDtools --upperthreshold). Reads with no informative
     /// sites carry no evidence and are not kept (PMDtools keeps them; so does --pmdtools-compat).
-    #[arg(long, visible_alias = "upperthreshold", allow_negative_numbers = true)]
+    #[arg(
+        help_heading = "Filtering",
+        long,
+        visible_alias = "upperthreshold",
+        allow_negative_numbers = true
+    )]
     upper_threshold: Option<f64>,
     /// Add the PMD score to kept reads as a tag (overwrites an existing tag of that name).
-    #[arg(long)]
+    #[arg(help_heading = "Output", long)]
     tag: bool,
     /// Tag name: "pm" (pm:f, 32-bit float) or "DS" (DS:Z, 3 decimals, as PMDtools --writesamfield).
-    #[arg(long, value_enum, default_value = "pm", requires = "tag")]
+    #[arg(
+        help_heading = "Output",
+        long,
+        value_enum,
+        default_value = "pm",
+        requires = "tag"
+    )]
     tag_name: TagName,
     /// Accepted for PMDtools compatibility and ignored: a header is always written.
     #[arg(long, hide = true)]
@@ -107,7 +154,7 @@ struct ScoreArgs {
     /// Input SAM or BAM file ("-" for stdin).
     input: PathBuf,
     /// Output TSV file (default: stdout; "-" also writes to stdout).
-    #[arg(short, long)]
+    #[arg(help_heading = "Output", short, long)]
     output: Option<PathBuf>,
     #[command(flatten)]
     summary: SummaryArgs,
@@ -137,59 +184,96 @@ enum TreatmentArg {
 #[command(group(ArgGroup::new("treatment_choice").args(["treatment", "udg_minus", "udg_half", "udg_plus"])))]
 struct ModelArgs {
     /// Library type: double-stranded (ds) or single-stranded (ss). Never guessed from the data.
-    #[arg(long, value_enum, default_value = "ds")]
+    #[arg(help_heading = "Scoring model", long, value_enum, default_value = "ds")]
     library: LibraryArg,
     /// Same as --library ss (PMDtools option).
-    #[arg(long)]
+    #[arg(help_heading = "Scoring model", long)]
     ss: bool,
     /// UDG treatment: none (all C/G sites), half (CpG sites plus the terminal base), full (CpG only).
-    #[arg(long, value_enum, default_value = "none")]
+    #[arg(
+        help_heading = "Scoring model",
+        long,
+        value_enum,
+        default_value = "none"
+    )]
     treatment: TreatmentArg,
     /// Same as --treatment none (PMDtools option).
-    #[arg(long = "UDGminus")]
+    #[arg(help_heading = "Scoring model", long = "UDGminus")]
     udg_minus: bool,
     /// Same as --treatment half (PMDtools option).
-    #[arg(long = "UDGhalf")]
+    #[arg(help_heading = "Scoring model", long = "UDGhalf")]
     udg_half: bool,
     /// Same as --treatment full (PMDtools --UDGplus / --CpG).
-    #[arg(long = "UDGplus", visible_alias = "CpG")]
+    #[arg(
+        help_heading = "Scoring model",
+        long = "UDGplus",
+        visible_alias = "CpG"
+    )]
     udg_plus: bool,
     /// Geometric decay of damage away from the read end (PMDtools --PMDpparam).
-    #[arg(long, visible_alias = "PMDpparam", default_value_t = 0.3)]
+    #[arg(
+        help_heading = "Scoring model",
+        long,
+        visible_alias = "PMDpparam",
+        default_value_t = 0.3
+    )]
     pmd_p: f64,
     /// Damage added at every position (PMDtools --PMDconstant).
-    #[arg(long, visible_alias = "PMDconstant", default_value_t = 0.01)]
+    #[arg(
+        help_heading = "Scoring model",
+        long,
+        visible_alias = "PMDconstant",
+        default_value_t = 0.01
+    )]
     pmd_c: f64,
     /// Polymorphism rate in the ancient model (PMDtools --polymorphism_ancient).
-    #[arg(long, visible_alias = "polymorphism_ancient", default_value_t = 0.001)]
+    #[arg(
+        help_heading = "Scoring model",
+        long,
+        visible_alias = "polymorphism_ancient",
+        default_value_t = 0.001
+    )]
     pi_ancient: f64,
     /// Polymorphism rate in the null model (PMDtools --polymorphism_contamination).
     #[arg(
+        help_heading = "Scoring model",
         long,
         visible_alias = "polymorphism_contamination",
         default_value_t = 0.001
     )]
     pi_contamination: f64,
     /// Skip reads with mapping quality below this (PMDtools -m).
-    #[arg(short = 'm', long, visible_alias = "requiremapq", default_value_t = 0)]
+    #[arg(
+        help_heading = "Read filters",
+        short = 'm',
+        long,
+        visible_alias = "requiremapq",
+        default_value_t = 0
+    )]
     min_mapq: u8,
     /// Ignore bases with base quality below this (PMDtools -q).
-    #[arg(short = 'q', long, visible_alias = "requirebaseq", default_value_t = 0)]
+    #[arg(
+        help_heading = "Read filters",
+        short = 'q',
+        long,
+        visible_alias = "requirebaseq",
+        default_value_t = 0
+    )]
     min_baseq: u8,
     /// Skip reads with soft or hard clips (PMDtools --noclips).
-    #[arg(long, visible_alias = "noclips")]
+    #[arg(help_heading = "Read filters", long, visible_alias = "noclips")]
     no_clips: bool,
     /// Skip reads with insertions or deletions (PMDtools --noindels).
-    #[arg(long, visible_alias = "noindels")]
+    #[arg(help_heading = "Read filters", long, visible_alias = "noindels")]
     no_indels: bool,
     /// Reproduce PMDtools 0.60 exactly, including its bugs: the reference rebuilt wrongly for reads
     /// combining an insertion or soft clip with a deletion or '=' CIGAR operations, CpG context
     /// wrapping around the read ends, and PMDtools' CpG rule for damage tables. For comparisons.
-    #[arg(long)]
+    #[arg(help_heading = "Scoring model", long)]
     pmdtools_compat: bool,
     /// Threads to use: at most this many do work at once (reading, scoring, BGZF
     /// compression and writing). Output is identical for any value.
-    #[arg(short = '@', long, default_value_t = 1)]
+    #[arg(help_heading = "Performance", short = '@', long, default_value_t = 1)]
     threads: usize,
 }
 
@@ -287,10 +371,10 @@ fn open_input(path: &PathBuf) -> Result<Box<dyn Read + Send>, Failure> {
 #[derive(Args)]
 struct SummaryArgs {
     /// Also write a JSON run summary (counts, score histogram, damage table) to this file.
-    #[arg(long)]
+    #[arg(help_heading = "Summary", long)]
     summary: Option<PathBuf>,
     /// Positions from each read end in the damage table (PMDtools --range).
-    #[arg(long, default_value_t = 30)]
+    #[arg(help_heading = "Summary", long, default_value_t = 30)]
     range: usize,
 }
 
@@ -503,6 +587,14 @@ fn consume_batch(
     Ok(())
 }
 
+/// The damage table needs at least the terminal position.
+fn check_range(range: usize) -> Result<(), Failure> {
+    if range == 0 {
+        return Err(Failure::Input("--range must be at least 1".into()));
+    }
+    Ok(())
+}
+
 /// At most `threads` threads do work at once. With one, this thread does everything (the pool
 /// thread only runs scoring while this thread waits). With more, the pool's `threads` threads do
 /// all the work, one of them the serial part (scan, bgzf.rs), while this thread waits.
@@ -585,6 +677,7 @@ impl Finish<'_> {
 
 fn run_score(args: &ScoreArgs) -> Result<(), Failure> {
     let (settings, filters) = args.model.settings().map_err(Failure::Input)?;
+    check_range(args.summary.range)?;
     init_threads(args.model.threads)?;
     let (mut reader, header) = open_reader(&args.input, args.model.threads)?;
     let out: Box<dyn Write + Send> = match &args.output {
@@ -636,6 +729,7 @@ fn run_score(args: &ScoreArgs) -> Result<(), Failure> {
 
 fn run_damage(args: &DamageArgs) -> Result<(), Failure> {
     let (settings, filters) = args.model.settings().map_err(Failure::Input)?;
+    check_range(args.range)?;
     init_threads(args.model.threads)?;
     let (mut reader, header) = open_reader(&args.input, args.model.threads)?;
     let mut summary = Summary::new(args.range);
@@ -731,6 +825,7 @@ fn run_filter(args: &FilterArgs) -> Result<(), Failure> {
     use noodles_util::alignment::io::Format;
 
     let (settings, filters) = args.model.settings().map_err(Failure::Input)?;
+    check_range(args.summary.range)?;
     init_threads(args.model.threads)?;
     let to_stdout = args.output.as_os_str() == "-";
     let format = if to_stdout {
