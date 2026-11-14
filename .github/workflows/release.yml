@@ -27,9 +27,9 @@ jobs:
           # on CentOS/RHEL 7 and newer. Not musl: its allocator made -@ 8 7-13x slower (2026-11-14).
           - { target: x86_64-unknown-linux-gnu, os: ubuntu-24.04, run: native, image: quay.io/pypa/manylinux2014_x86_64 }
           - { target: aarch64-unknown-linux-gnu, os: ubuntu-24.04-arm, run: native, image: quay.io/pypa/manylinux2014_aarch64 }
-          - { target: aarch64-apple-darwin, os: macos-14, run: native }
+          - { target: aarch64-apple-darwin, os: macos-latest, run: native }
           # Cross-compiled on Apple silicon; smoke-tested only if Rosetta is available.
-          - { target: x86_64-apple-darwin, os: macos-14, run: rosetta }
+          - { target: x86_64-apple-darwin, os: macos-latest, run: rosetta }
           - { target: x86_64-pc-windows-msvc, os: windows-latest, run: native }
     steps:
       - uses: actions/checkout@v4
