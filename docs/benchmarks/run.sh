@@ -43,17 +43,20 @@ if [ ! -s "$OUT/environment.txt" ]; then
 fi
 
 # timed NAME INPUT CONFIG RUN CMD...: run CMD under /usr/bin/time -v, append a row to times.tsv.
+# Wall time comes from /proc/uptime (a monotonic clock): the WSL wall clock that /usr/bin/time
+# reads can jump by about 2 s. CPU time and peak memory come from /usr/bin/time.
 timed() {
   local name=$1 input=$2 config=$3 run=$4; shift 4
   local tlog="$OUT/logs/$name.time"
   if [ -s "$tlog" ]; then log "skip $name (done)"; return; fi
   log "start $name"
   printf '%s\n' "$*" > "$OUT/logs/$name.cmd"
-  local rc=0
+  local rc=0 up0 up1 _
+  read -r up0 _ < /proc/uptime
   /usr/bin/time -v -o "$tlog.tmp" bash -c "set -o pipefail; $*" 2> "$OUT/logs/$name.stderr" || rc=$?
+  read -r up1 _ < /proc/uptime
   mv "$tlog.tmp" "$tlog"
-  awk -v n="$name" -v i="$input" -v c="$config" -v r="$run" -v rc="$rc" -F': ' '
-    /Elapsed \(wall clock\)/ { k=split($2,t,":"); w=(k==3)? t[1]*3600+t[2]*60+t[3] : t[1]*60+t[2] }
+  awk -v n="$name" -v i="$input" -v c="$config" -v r="$run" -v rc="$rc" -v w="$(awk -v a="$up0" -v b="$up1" 'BEGIN{print b-a}')" -F': ' '
     /User time/ {u=$2} /System time/ {s=$2} /Maximum resident/ {m=$2}
     END { printf "%s\t%s\t%s\t%s\t%.2f\t%s\t%s\t%s\t%s\n", n,i,c,r,w,u,s,m,rc }' "$tlog" >> "$TIMES"
   log "done  $name rc=$rc"

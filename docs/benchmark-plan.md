@@ -1,6 +1,6 @@
 # Benchmark plan — 2026-11-11
 
-Status: **run once as a preliminary round** (3 runs per configuration, 2026-11-12): results in [benchmarks.md](benchmarks.md); the raw logs were kept locally, not committed (decided 2026-11-13). The full 5-run round on the final build is still to do. No speed or memory claim may go beyond what benchmarks.md shows (CLAUDE.md §7).
+Status: **done.** A preliminary round (3 runs per configuration) ran on 2026-11-12, and the full 5-run round on commit `b14f4ee` on 2026-11-13: results in [benchmarks.md](benchmarks.md). The raw logs are kept locally, not committed (decided 2026-11-13). No speed or memory claim may go beyond what benchmarks.md shows (CLAUDE.md §7).
 
 ## 1. Questions
 1. **PMDtools vs pmdshodh.** How long does a PMD-filtered BAM take with PMDtools as nf-core runs it, against `pmdshodh filter` on the same input and threshold?
