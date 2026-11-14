@@ -754,3 +754,69 @@ fn multi_batch_results_do_not_depend_on_thread_count() {
     assert_eq!(scores("1"), scores("2"));
     assert_eq!(scores("1"), scores("4"));
 }
+
+/// Damage tables are only counted when a summary is written; scores, kept reads and the summary's
+/// tables must not depend on that.
+#[test]
+fn results_do_not_depend_on_summary() {
+    let dir = tmp_dir("summary_or_not");
+    let input = data("reads_random.sam");
+    let input = input.to_str().unwrap();
+    let from_damage = damage_json(&[])["damage"].clone();
+    assert_ne!(from_damage["first_position"]["n"], 0);
+    for threads in ["1", "2"] {
+        let js = dir.join(format!("score{threads}.json"));
+        let with = run(&[
+            "score",
+            "--quiet",
+            "-@",
+            threads,
+            "--summary",
+            js.to_str().unwrap(),
+            input,
+        ]);
+        let without = run(&["score", "--quiet", "-@", threads, input]);
+        assert!(with.status.success() && without.status.success());
+        assert!(
+            with.stdout == without.stdout,
+            "score output depends on --summary (-@ {threads})"
+        );
+        let j: serde_json::Value = serde_json::from_str(&fs::read_to_string(&js).unwrap()).unwrap();
+        assert_eq!(
+            j["damage"], from_damage,
+            "score --summary damage table (-@ {threads})"
+        );
+
+        let (a, b) = (
+            dir.join(format!("with{threads}.bam")),
+            dir.join(format!("without{threads}.bam")),
+        );
+        let fjs = dir.join(format!("filter{threads}.json"));
+        let fa = ["filter", "-t", "3", "--tag", "--quiet", "-@", threads];
+        let o = run(&[
+            &fa[..],
+            &[
+                "--summary",
+                fjs.to_str().unwrap(),
+                input,
+                "-o",
+                a.to_str().unwrap(),
+            ],
+        ]
+        .concat());
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        let o = run(&[&fa[..], &[input, "-o", b.to_str().unwrap()]].concat());
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        let (ra, rb) = (read_records(&a).1, read_records(&b).1);
+        assert!(
+            !ra.is_empty() && ra == rb,
+            "kept reads depend on --summary (-@ {threads})"
+        );
+        let j: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&fjs).unwrap()).unwrap();
+        assert_eq!(
+            j["damage"], from_damage,
+            "filter --summary damage table (-@ {threads})"
+        );
+    }
+}

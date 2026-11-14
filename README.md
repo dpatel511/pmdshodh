@@ -212,7 +212,7 @@ The complete list, with reasoning: [docs/design.md](docs/design.md) §5.
 ## Limitations
 
 - CRAM input is not yet supported.
-- Benchmarks cover one laptop and two double-stranded libraries: [docs/benchmarks.md](docs/benchmarks.md). On one thread, metaDMG `pmd` scores reads 8–15% faster than `pmdshodh score`.
+- Benchmarks cover one laptop and two double-stranded libraries: [docs/benchmarks.md](docs/benchmarks.md). In that round, metaDMG `pmd` scored reads 8–15% faster than `pmdshodh score` on one thread. Since then, `score` skips damage counting without `--summary`; on 2 M reads it took 6.18 s against metaDMG's 8.23 s (CHANGELOG.md).
 - No real single-stranded library has been tested; single-stranded parity rests on synthetic reads.
 - UDG-half damage *tables* do not yet match PMDtools (UDG-half *scores* do).
 
