@@ -2,7 +2,7 @@
 
 Each configuration ran **5 times** on one laptop, following [benchmark-plan.md](benchmark-plan.md). The pmdshodh build was commit `b14f4ee`, which includes the speed work of PRs #9 and #10. All times are medians of 5 runs unless a row says otherwise.
 
-`run.sh` writes the raw logs: commands, `/usr/bin/time -v` output, stderr, and a per-run `times.tsv` with the min–max range. `check.py` writes `summary.tsv` and `checks.tsv`. The logs are kept with the benchmark machine and are not committed. The scripts are [benchmarks/run.sh](benchmarks/run.sh) and [benchmarks/check.py](benchmarks/check.py).
+`run.sh` writes the raw logs: commands, `/usr/bin/time -v` output, stderr, and a per-run `times.tsv` with the min–max range. `check.py` writes `summary.tsv` and `checks.tsv`. The logs are kept with the benchmark machine and are not committed. The scripts are [benchmarks/run.sh](benchmarks/run.sh), [benchmarks/check.py](benchmarks/check.py) and [benchmarks/classify.py](benchmarks/classify.py).
 
 ## Setup
 
@@ -61,7 +61,7 @@ pmdshodh score --quiet -@ N in.bam -o out.tsv                             # N = 
 metaDMG-cpp pmd -@ N in.bam > out.txt                                     # N = 1, 8
 ```
 
-Reproduce with `RUNS=5 INPUTS="BER11_L_NOuser Motala3" SYNTH="1M 10M 50M" bash docs/benchmarks/run.sh`, then `python3 docs/benchmarks/check.py WORK RESULTS BER11_L_NOuser Motala3`.
+Reproduce with `RUNS=5 INPUTS="BER11_L_NOuser Motala3" SYNTH="1M 10M 50M" bash docs/benchmarks/run.sh`, then `python3 docs/benchmarks/check.py WORK RESULTS BER11_L_NOuser Motala3`. The default-vs-PMDtools classification below comes from `python3 docs/benchmarks/classify.py WORK DATA INPUT 1e-9`, run once per input (no tolerance argument means 1e-6).
 
 ## Results
 
@@ -142,9 +142,15 @@ Run on every benchmark input with `check.py`. All checks passed.
 - BER11_L_NOuser: 1,907 reads kept only by PMDtools, 94 only by pmdshodh, 1,029,286 by both.
 - Motala3: 242, 97 and 301,625.
 
-These counts are the same as in the preliminary round (2026-11-12, commit `a98ae07`). In that round, every read whose default score differed from PMDtools' was traced to a documented departure (docs/design.md §5), with none unexplained. That classification was not rerun on this round's outputs.
+Every read whose default score differs from PMDtools' comes from a documented departure (docs/design.md §5); none are unexplained. This was checked on this round's outputs (2026-11-14).
 
-| Cause of the difference (preliminary round) | BER11_L_NOuser | of which cross PMD 3 | Motala3 | of which cross PMD 3 |
+- **Method:** each read's default score (`score -@ 1`) was compared with PMDtools' `--printDS` score for the same read, in input order. Read names were checked against the BAM, and the three streams had the same length.
+- **Tolerance 1e-9:** the counts are the ones in the table.
+- **Tolerance 1e-6** (the parity check's): 30 fewer CIGAR-fix reads on BER11_L_NOuser (3,953) and 54 fewer on Motala3 (3,703), which differ by less than that. Nothing else changes, and the reads that cross PMD 3 are the same.
+- **Threshold crossings:** the reads that cross PMD 3 add up to the kept-read differences above: 2,001 = 1,907 + 94, and 339 = 242 + 97.
+- **Preliminary round:** the classification matches it (2026-11-12, commit `a98ae07`).
+
+| Cause of the difference (tolerance 1e-9) | BER11_L_NOuser | of which cross PMD 3 | Motala3 | of which cross PMD 3 |
 |---|---|---|---|---|
 | CIGAR reconstruction fix (`I`/`S` with `D`/`=`) | 3,983 | 1,960 | 3,757 | 339 |
 | Lowercase MD bases | 336 | 38 | 0 | 0 |
