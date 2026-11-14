@@ -187,8 +187,8 @@ struct ModelArgs {
     /// wrapping around the read ends, and PMDtools' CpG rule for damage tables. For comparisons.
     #[arg(long)]
     pmdtools_compat: bool,
-    /// Worker threads for scoring and BGZF (de)compression; above 1, reading and scoring also
-    /// overlap with output. Output is identical for any value.
+    /// Threads to use: at most this many do work at once (reading, scoring, BGZF
+    /// compression and writing). Output is identical for any value.
     #[arg(short = '@', long, default_value_t = 1)]
     threads: usize,
 }
@@ -310,10 +310,7 @@ fn open_reader(
         .starts_with(&[0x1f, 0x8b]);
     let builder = alignment::io::reader::Builder::default();
     let source: Box<dyn Read + Send> = if bgzf {
-        let workers = std::num::NonZero::new(threads).unwrap_or(std::num::NonZero::<usize>::MIN);
-        Box::new(noodles::bgzf::io::MultithreadedReader::with_worker_count(
-            workers, input,
-        ))
+        Box::new(pmdshodh::bgzf::Reader::new(input, threads > 1))
     } else {
         Box::new(input)
     };
@@ -338,9 +335,11 @@ const BATCH: usize = 10_000;
 /// `on_scored` in input order; it returns whether the read was kept (`None` without filtering).
 /// Scoring runs on the rayon thread pool; results and summary are independent of the thread count.
 ///
-/// With more than one thread, the stages overlap: a reader thread reads batch k+2 and a scoring
-/// thread scores batch k+1 while this thread consumes batch k. Batches are consumed in input
+/// With more than one thread, the stages overlap: the pool scores up to [`SCORED_AHEAD`] batches
+/// while one pool thread reads the next and consumes the oldest. That thread does all serial work
+/// (reading, consuming, writing) and runs other pool jobs (scoring, BGZF) while it waits. Batches are consumed in input
 /// order, so output and summary are the same as the sequential loop used with one thread.
+#[allow(clippy::too_many_arguments)]
 fn scan(
     reader: &mut InputReader,
     header: &noodles::sam::Header,
@@ -348,10 +347,11 @@ fn scan(
     filters: &ReadFilters,
     summary: &mut Summary,
     max_reads: Option<u64>,
-    mut on_scored: impl FnMut(&AlignmentRecord, &ReadScore) -> Result<Option<bool>, Failure>,
+    threads: usize,
+    mut on_scored: impl FnMut(&AlignmentRecord, &ReadScore) -> Result<Option<bool>, Failure> + Send,
 ) -> Result<(), Failure> {
     let range = summary.damage.range;
-    if rayon::current_num_threads() == 1 {
+    if threads == 1 {
         let mut n_read = 0u64;
         loop {
             let batch = read_batch(reader, header, max_reads, &mut n_read)?;
@@ -364,54 +364,56 @@ fn scan(
         }
     }
 
-    std::thread::scope(|s| {
-        // Rendezvous channel: the reader holds at most the one batch it is reading or handing over.
-        let (tx, rx) = std::sync::mpsc::sync_channel(0);
-        s.spawn(move || {
-            let mut n_read = 0u64;
-            loop {
-                let result = read_batch(reader, header, max_reads, &mut n_read);
-                let last = !matches!(&result, Ok(b) if !b.is_empty());
-                if tx.send(result).is_err() || last {
-                    return;
-                }
-            }
-        });
-        let join = |h: std::thread::ScopedJoinHandle<'_, _>| {
-            h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))
+    // The serial loop runs on a pool thread, so the pool's `threads` threads are all there is;
+    // the calling thread just waits.
+    rayon::scope(|s| {
+        let spawn = |batch: Vec<AlignmentRecord>| {
+            let (tx, rx) = std::sync::mpsc::sync_channel(1);
+            s.spawn(move |_| {
+                let parts = score_batch(&batch, settings, filters, range);
+                let _ = tx.send((batch, parts));
+            });
+            rx
         };
+        // A task that panicked drops its sender; the scope then re-raises that panic.
+        let join = |rx: std::sync::mpsc::Receiver<(Vec<AlignmentRecord>, Scored)>| {
+            pmdshodh::bgzf::wait_for(&rx).expect("scoring task panicked")
+        };
+        let mut n_read = 0u64;
         let mut first = 0u64;
-        let mut in_flight = None;
+        let mut in_flight = std::collections::VecDeque::new();
+        let mut consume_oldest = |in_flight: &mut std::collections::VecDeque<_>| {
+            let (batch, parts) = join(in_flight.pop_front().unwrap());
+            consume_batch(&batch, &parts, first, summary, &mut on_scored)?;
+            first += batch.len() as u64;
+            Ok::<(), Failure>(())
+        };
         loop {
-            // The reader sends until its last batch, so recv only fails after we stopped early.
-            let next = rx.recv().unwrap_or_else(|_| Ok(Vec::new()));
-            let next = match next {
-                Ok(batch) if !batch.is_empty() => Some(s.spawn(move || {
-                    let parts = score_batch(&batch, settings, filters, range);
-                    (batch, parts)
-                })),
-                Ok(_) => None,
+            match read_batch(reader, header, max_reads, &mut n_read) {
+                Ok(batch) if !batch.is_empty() => in_flight.push_back(spawn(batch)),
+                Ok(_) => {
+                    while !in_flight.is_empty() {
+                        consume_oldest(&mut in_flight)?;
+                    }
+                    return Ok(());
+                }
                 Err(e) => {
                     // Earlier reads come first: report their errors before the read error.
-                    if let Some(h) = in_flight.take() {
-                        let (batch, parts): (Vec<AlignmentRecord>, Scored) = join(h);
-                        consume_batch(&batch, &parts, first, summary, &mut on_scored)?;
+                    while !in_flight.is_empty() {
+                        consume_oldest(&mut in_flight)?;
                     }
                     return Err(e);
                 }
-            };
-            if let Some(h) = in_flight.take() {
-                let (batch, parts): (Vec<AlignmentRecord>, Scored) = join(h);
-                consume_batch(&batch, &parts, first, summary, &mut on_scored)?;
-                first += batch.len() as u64;
             }
-            match next {
-                Some(h) => in_flight = Some(h),
-                None => return Ok(()),
+            if in_flight.len() > SCORED_AHEAD {
+                consume_oldest(&mut in_flight)?;
             }
         }
     })
 }
+
+/// Batches scored on the pool while the serial thread consumes an older one (several threads).
+const SCORED_AHEAD: usize = 2;
 
 /// Outcomes and damage counts of one batch, in input order, one entry per scoring chunk.
 type Scored = Vec<(Vec<Result<Outcome, String>>, DamageCounts)>;
@@ -498,7 +500,9 @@ fn consume_batch(
     Ok(())
 }
 
-/// Use `threads` worker threads for scoring (and BGZF, where used).
+/// At most `threads` threads do work at once. With one, this thread does everything (the pool
+/// thread only runs scoring while this thread waits). With more, the pool's `threads` threads do
+/// all the work, one of them the serial part (scan, bgzf.rs), while this thread waits.
 fn init_threads(threads: usize) -> Result<(), Failure> {
     if threads == 0 {
         return Err(Failure::Input("--threads must be at least 1".into()));
@@ -580,12 +584,12 @@ fn run_score(args: &ScoreArgs) -> Result<(), Failure> {
     let (settings, filters) = args.model.settings().map_err(Failure::Input)?;
     init_threads(args.model.threads)?;
     let (mut reader, header) = open_reader(&args.input, args.model.threads)?;
-    let out: Box<dyn Write> = match &args.output {
+    let out: Box<dyn Write + Send> = match &args.output {
         Some(path) if path.as_os_str() != "-" => Box::new(
             File::create(path)
                 .map_err(|e| Failure::Runtime(format!("cannot create {}: {e}", path.display())))?,
         ),
-        _ => Box::new(io::stdout().lock()),
+        _ => Box::new(io::stdout()),
     };
     let mut out = BufWriter::new(out);
     let write_err = |e: io::Error| Failure::Runtime(format!("cannot write output: {e}"));
@@ -599,6 +603,7 @@ fn run_score(args: &ScoreArgs) -> Result<(), Failure> {
         &filters,
         &mut summary,
         None,
+        args.model.threads,
         |record, s| {
             let name = record
                 .name()
@@ -637,6 +642,7 @@ fn run_damage(args: &DamageArgs) -> Result<(), Failure> {
         &filters,
         &mut summary,
         args.max_reads,
+        args.model.threads,
         |_, _| Ok(None),
     )?;
     let fin = Finish {
@@ -776,6 +782,7 @@ fn run_filter(args: &FilterArgs) -> Result<(), Failure> {
         &filters,
         &mut summary,
         None,
+        args.model.threads,
         |record, score| {
             let keep = args.threshold.is_none_or(|t| score.pmds >= t)
                 && args.upper_threshold.is_none_or(|u| {
@@ -822,11 +829,11 @@ fn run_filter(args: &FilterArgs) -> Result<(), Failure> {
     Ok(())
 }
 
-/// Alignment output. BAM always goes through the multithreaded BGZF writer, so the bytes written
-/// do not depend on the number of threads.
+/// Alignment output. BAM goes through pmdshodh's BGZF writer, whose bytes do not depend on the
+/// number of threads.
 enum OutWriter {
     Sam(alignment::io::Writer<BufWriter<Box<dyn Write + Send>>>),
-    Bam(noodles::bam::io::Writer<noodles::bgzf::io::MultithreadedWriter<Box<dyn Write + Send>>>),
+    Bam(noodles::bam::io::Writer<pmdshodh::bgzf::Writer<Box<dyn Write + Send>>>),
 }
 
 impl OutWriter {
@@ -837,13 +844,9 @@ impl OutWriter {
     ) -> Result<Self, Failure> {
         use noodles_util::alignment::io::Format;
         Ok(match format {
-            Format::Bam => {
-                let workers =
-                    std::num::NonZero::new(threads).unwrap_or(std::num::NonZero::<usize>::MIN);
-                OutWriter::Bam(noodles::bam::io::Writer::from(
-                    noodles::bgzf::io::MultithreadedWriter::with_worker_count(workers, sink),
-                ))
-            }
+            Format::Bam => OutWriter::Bam(noodles::bam::io::Writer::from(
+                pmdshodh::bgzf::Writer::new(sink, threads > 1),
+            )),
             _ => OutWriter::Sam(
                 alignment::io::writer::Builder::default()
                     .set_format(format)
@@ -876,7 +879,7 @@ impl OutWriter {
         match self {
             OutWriter::Sam(w) => w.finish(header),
             // Writes the BGZF end-of-file block and waits for the compression workers.
-            OutWriter::Bam(w) => w.get_mut().finish().map(|_| ()),
+            OutWriter::Bam(w) => w.get_mut().finish(),
         }
     }
 }

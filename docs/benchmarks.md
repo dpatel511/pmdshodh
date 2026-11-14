@@ -93,6 +93,7 @@ Reproduce with `RUNS=5 INPUTS="BER11_L_NOuser Motala3" SYNTH="1M 10M 50M" bash d
 
 - "CPU cores used" is median CPU time (user + system) divided by median wall time.
 - **`-@ N` uses more than N cores.** Above 1, reading, scoring and writing run in separate threads, in addition to the N scoring and BGZF threads. This is why going from 1 to 2 is more than 2× faster. Even `-@ 1` uses slightly more than one core.
+- **Changed after this benchmark (2026-11-14):** `-@ N` now uses at most N threads doing work at once, so the timings in this document overstate speed per `-@` value for later builds (CHANGELOG.md). They have not been rerun on the full inputs.
 - Scaling flattens after 8 threads. The CPU has 4 performance cores, and the reader and writer are each a single thread.
 
 ### Per-read scores: pmdshodh vs metaDMG

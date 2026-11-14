@@ -560,6 +560,7 @@ dependencies = [
  "noodles-util",
  "rayon",
  "serde_json",
+ "zlib-rs",
 ]
 
 [[package]]

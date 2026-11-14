@@ -122,7 +122,7 @@ PMDtools option names are accepted as aliases (shown in the second column).
 | `--summary FILE` | `filter`, `score` | Also write the JSON run summary. |
 | `--range N` | all | Positions from each read end in damage tables (default 30). |
 | `-n, --max-reads N` | `damage` | Stop after N reads. |
-| `-@, --threads N` | all | Worker threads (default 1). |
+| `-@, --threads N` | all | Threads (default 1): at most N do work at once, so you can pass your CPU allocation. |
 | `--pmdtools-compat` | all | Reproduce PMDtools 0.60 exactly, including its bugs. |
 | `--quiet` | all | Suppress the summary line on stderr. |
 

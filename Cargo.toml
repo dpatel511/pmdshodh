@@ -10,3 +10,5 @@ noodles = { version = "=0.119.0", features = ["core", "sam", "bam", "cram", "bgz
 noodles-util = { version = "=0.88.0", features = ["alignment"] }
 rayon = "1.12.0"
 serde_json = "1.0.154"
+# BGZF (de)compression on the shared thread pool (src/bgzf.rs); the version noodles-bgzf uses.
+zlib-rs = "0.6.8"
