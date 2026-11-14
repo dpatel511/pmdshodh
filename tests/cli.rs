@@ -700,7 +700,7 @@ fn errors_are_reported_in_input_order_with_any_thread_count() {
     many_reads_sam(&both, 25_000, Some(12_000), Some(21_000));
     let parse_only = dir.join("parse.sam");
     many_reads_sam(&parse_only, 25_000, None, Some(21_000));
-    for threads in ["1", "4"] {
+    for threads in ["1", "2", "4"] {
         for (input, expect) in [(&both, "read r12000"), (&parse_only, "record 21000")] {
             let out = dir.join("out.bam");
             let o = run(&[
@@ -744,11 +744,13 @@ fn multi_batch_results_do_not_depend_on_thread_count() {
     };
     for extra in [&[][..], &["-n", "15000"]] {
         let one = summary("1", extra);
+        assert_eq!(one, summary("2", extra), "{extra:?}");
         assert_eq!(one, summary("4", extra), "{extra:?}");
         let expected = if extra.is_empty() { 25_000 } else { 15_000 };
         assert_eq!(one["reads"]["input"], expected);
     }
     let scores =
         |threads: &str| run(&["score", "--quiet", "-@", threads, input.to_str().unwrap()]).stdout;
+    assert_eq!(scores("1"), scores("2"));
     assert_eq!(scores("1"), scores("4"));
 }

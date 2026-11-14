@@ -184,15 +184,16 @@ Notes:
 
 ## 7. Performance design (no claims yet)
 
-- **Pipeline:** a reader thread decodes BGZF blocks (noodles multi-threaded reader). Batches of records go to N scoring workers. A writer re-orders batches by sequence number and writes with a multi-threaded BGZF writer.
+- **Pipeline:** one serial thread reads records in batches, hands each batch to the scoring pool and applies scored batches in input order; BGZF blocks are decompressed and compressed on the same pool.
 - **Memory:** bounded by (batch size × in-flight batches), independent of file size.
 - **Determinism:** the score table and summary JSON are byte-identical for any thread count, and BAM output has identical records and header. The one exception is `@PG CL`, which records the command line, including `-@`. Because the header shares a BGZF block with the first records, compressed bytes then differ from that point. A test checks all of this on 25,500 reads at `-@ 1` and `-@ 4` (CLAUDE.md §12).
 - **As built (step 6):**
   - records are read in batches of 10,000;
-  - each batch is scored in parallel chunks on a rayon pool of `-@` threads, with per-chunk damage counts summed afterwards;
+  - each batch is scored in parallel chunks, with per-chunk damage counts summed afterwards;
   - results are applied in input order;
-  - with `-@` above 1, the stages overlap (2026-11-13): a reader thread reads batch k+2 and a scoring thread scores batch k+1 while the main thread applies batch k, so at most three batches are in flight. With `-@ 1` the stages run one after another, as before;
-  - BGZF input is decompressed, and BAM output compressed, by noodles' multithreaded BGZF reader and writer. BAM always uses the multithreaded writer, so the block layout does not depend on `-@`.
+  - **`-@ N` means at most N threads doing work at once (2026-11-14)**, so pipelines can pass their CPU allocation. With `-@ 1` one thread does everything, one stage after another. With more, everything runs on a rayon pool of N threads. One of them does the serial work: reading records, applying scored batches, encoding output. The others score batches and decompress and compress BGZF blocks (`src/bgzf.rs`). The serial thread runs pool jobs while it waits, and the calling thread only waits. Up to two batches are scored ahead of the one being applied, so at most four batches are in memory;
+  - why pmdshodh has its own BGZF code: before 2026-11-14, noodles' multithreaded BGZF reader and writer each started their own pool of N threads beside the scoring pool. `-@ 8` then used about 9 cores, and a fixed split of N between separate pools was much slower for either threshold filtering or keep-all filtering (docs/benchmarks.md);
+  - `src/bgzf.rs` frames and compresses blocks exactly as noodles-bgzf 0.52 does (zlib-rs, level 6, same block size). BAM bytes are unchanged from earlier builds and do not depend on `-@`; a unit test compares the output with noodles' writer.
   - Measured speed: docs/benchmarks.md.
 - **Benchmark protocol for later speed claims:**
   - same machine, same input;
