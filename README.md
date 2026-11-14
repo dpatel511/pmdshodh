@@ -81,7 +81,7 @@ pmdshodh damage sample.bam -o sample.damage.json
 
 `filter` keeps reads with score **≥ `--threshold`** and/or **< `--upper-threshold`**; at least one is required.
 
-Run `pmdshodh <command> --help` for every option.
+Run `pmdshodh <command> --help` for every option, grouped by purpose, with examples.
 
 ## Options
 
@@ -120,7 +120,7 @@ PMDtools option names are accepted as aliases (shown in the second column).
 | `--upper-threshold X` | `filter` | Keep reads with score < X. |
 | `--tag`, `--tag-name pm\|DS` | `filter` | Add the score to kept reads as `pm:f` (32-bit float, default) or `DS:Z` (3 decimals, as PMDtools `--writesamfield`). |
 | `--summary FILE` | `filter`, `score` | Also write the JSON run summary. |
-| `--range N` | all | Positions from each read end in damage tables (default 30). |
+| `--range N` | all | Positions from each read end in damage tables (default 30, at least 1). |
 | `-n, --max-reads N` | `damage` | Stop after N reads. |
 | `-@, --threads N` | all | Threads (default 1): at most N do work at once, so you can pass your CPU allocation. |
 | `--pmdtools-compat` | all | Reproduce PMDtools 0.60 exactly, including its bugs. |
