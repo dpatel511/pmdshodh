@@ -1,0 +1,188 @@
+name: Release
+
+# A version tag (e.g. v0.1.0) builds every binary and creates a *draft* GitHub Release; a person
+# reviews and publishes it. Pull requests that touch this file or the manifest run the builds and
+# checks without releasing anything.
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+  pull_request:
+    paths: [".github/workflows/release.yml", "Cargo.toml", "Cargo.lock"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux binaries are built against glibc 2.17 (manylinux2014, CentOS 7 base), so they run
+          # on CentOS/RHEL 7 and newer. Not musl: its allocator made -@ 8 7-13x slower (2026-11-14).
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-24.04, run: native, image: quay.io/pypa/manylinux2014_x86_64 }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-24.04-arm, run: native, image: quay.io/pypa/manylinux2014_aarch64 }
+          - { target: aarch64-apple-darwin, os: macos-latest, run: native }
+          # Cross-compiled on Apple silicon; smoke-tested only if Rosetta is available.
+          - { target: x86_64-apple-darwin, os: macos-latest, run: rosetta }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest, run: native }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: ${{ !matrix.image }}
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build
+        if: ${{ !matrix.image }}
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      # Actions cannot run inside the CentOS 7 image (Node 20 needs glibc 2.28), so only the build
+      # runs there.
+      - name: Build (manylinux2014)
+        if: ${{ matrix.image }}
+        run: |
+          docker run --rm -v "$PWD:/io" -w /io ${{ matrix.image }} bash -euo pipefail -c '
+            curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+            source "$HOME/.cargo/env"
+            cargo build --release --locked --target ${{ matrix.target }}'
+          sudo chown -R "$(id -u):$(id -g)" target
+
+      - name: Check glibc requirement
+        if: ${{ matrix.image }}
+        run: |
+          bin=target/${{ matrix.target }}/release/pmdshodh
+          need=$(objdump -T "$bin" | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -V | tail -n 1)
+          echo "newest glibc symbol needed: $need"
+          newest=$(printf '%s\n' "$need" 2.17 | sort -V | tail -n 1)
+          test "$newest" = 2.17
+
+      - name: Smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin=target/${{ matrix.target }}/release/pmdshodh
+          [ -f "$bin.exe" ] && bin="$bin.exe"
+          run=()
+          if [ "${{ matrix.run }}" = rosetta ]; then
+            if ! arch -x86_64 /usr/bin/true 2>/dev/null; then
+              echo "::warning::Rosetta not available; ${{ matrix.target }} binary built but not run"
+              exit 0
+            fi
+            run=(arch -x86_64)
+          fi
+          in=tests/data/reads_random.sam
+          ${run[@]+"${run[@]}"} "$bin" --version
+          ${run[@]+"${run[@]}"} "$bin" score --quiet "$in" -o smoke.tsv
+          ${run[@]+"${run[@]}"} "$bin" filter -t 3 --quiet --summary smoke.json "$in" -o smoke.bam
+          test "$(wc -l < smoke.tsv)" -eq 1501
+          mkdir -p smoke && cp smoke.tsv smoke/${{ matrix.target }}.tsv
+
+      - name: Package
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          name=pmdshodh-$version-${{ matrix.target }}
+          mkdir -p "dist/$name"
+          bin=target/${{ matrix.target }}/release/pmdshodh
+          if [ -f "$bin.exe" ]; then cp "$bin.exe" "dist/$name/"; else cp "$bin" "dist/$name/"; fi
+          cp README.md LICENSE CHANGELOG.md "dist/$name/"
+          cd dist
+          if [ "${{ runner.os }}" = Windows ]; then
+            7z a -bd "$name.zip" "$name" > /dev/null
+            archive=$name.zip
+          else
+            tar -czf "$name.tar.gz" "$name"
+            archive=$name.tar.gz
+          fi
+          if command -v sha256sum > /dev/null; then sha256sum "$archive" > "$archive.sha256"
+          else shasum -a 256 "$archive" > "$archive.sha256"; fi
+          cat "$archive.sha256"
+          rm -r "$name"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: smoke-${{ matrix.target }}
+          path: smoke/*
+          if-no-files-found: ignore
+
+  # Scores must not depend on the platform. Each platform's libm may round ln/powf differently in
+  # the last bit, so scores are compared with a tolerance; names, flags and site counts exactly.
+  same-output:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: smoke-*
+          path: smoke
+          merge-multiple: true
+      - name: Compare
+        shell: python
+        run: |
+          import glob, itertools
+          files = sorted(glob.glob("smoke/*.tsv"))
+          assert len(files) >= 4, files
+          ref = open(files[0]).read().splitlines()
+          for f in files[1:]:
+              other = open(f).read().splitlines()
+              assert len(other) == len(ref) and other[0] == ref[0], f
+              worst = 0.0
+              for a, b in itertools.zip_longest(ref[1:], other[1:]):
+                  a, b = a.split("\t"), b.split("\t")
+                  # read_name, flag, n_sites exactly; pmds (column 3) within the tolerance.
+                  assert (a[0], a[1], a[3]) == (b[0], b[1], b[3]), (f, a, b)
+                  worst = max(worst, abs(float(a[2]) - float(b[2])))
+              assert worst <= 1e-12, (f, worst)
+              print(f"{f} vs {files[0]}: byte-identical {other == ref}, largest score difference {worst:.3g}")
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, same-output]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $version"
+            exit 1
+          fi
+          # Release notes: this version's CHANGELOG section, which must exist.
+          awk -v v="$version" '
+            $0 ~ "^## \\[" v "\\]" { on = 1; next }
+            on && /^## \[/ { exit }
+            on { print }' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "::error::CHANGELOG.md has no section for [$version]"
+            exit 1
+          fi
+          (cd dist && cat *.sha256 > SHA256SUMS)
+          gh release create "$GITHUB_REF_NAME" --draft --verify-tag \
+            --title "pmdshodh $version" --notes-file notes.md dist/*
