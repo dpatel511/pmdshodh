@@ -820,3 +820,111 @@ fn results_do_not_depend_on_summary() {
         );
     }
 }
+
+/// `--range 0` would give empty damage tables; it is rejected before any input is read.
+#[test]
+fn range_must_be_at_least_1() {
+    let dir = tmp_dir("range_0");
+    let input = data("reads_random.sam");
+    let input = input.to_str().unwrap();
+    let out = |name: &str| dir.join(name).to_str().unwrap().to_string();
+    let (s, f, d) = (out("s.tsv"), out("f.bam"), out("d.json"));
+    let cases = [
+        vec!["score", "--range", "0", input, "-o", &s],
+        vec!["filter", "-t", "3", "--range", "0", input, "-o", &f],
+        vec!["damage", "--range", "0", input, "-o", &d],
+    ];
+    for args in cases {
+        let o = run(&args);
+        assert_eq!(o.status.code(), Some(2), "{args:?}");
+        assert!(String::from_utf8_lossy(&o.stderr).contains("--range must be at least 1"));
+    }
+    assert_eq!(
+        fs::read_dir(&dir).unwrap().count(),
+        0,
+        "no output file is left behind"
+    );
+}
+
+#[test]
+fn subcommand_help_groups_options_and_shows_examples() {
+    for (cmd, headings) in [
+        (
+            "filter",
+            &[
+                "Output:",
+                "Filtering:",
+                "Summary:",
+                "Scoring model:",
+                "Read filters:",
+                "Performance:",
+            ][..],
+        ),
+        (
+            "score",
+            &[
+                "Output:",
+                "Summary:",
+                "Scoring model:",
+                "Read filters:",
+                "Performance:",
+            ][..],
+        ),
+        (
+            "damage",
+            &[
+                "Input:",
+                "Output:",
+                "Summary:",
+                "Scoring model:",
+                "Read filters:",
+                "Performance:",
+            ][..],
+        ),
+    ] {
+        let o = run(&[cmd, "--help"]);
+        assert!(o.status.success() && o.stderr.is_empty());
+        let help = String::from_utf8(o.stdout).unwrap();
+        assert!(help.contains(&format!("Usage: pmdshodh {cmd} ")), "{help}");
+        for h in headings.iter().chain(&["Examples:"]) {
+            assert!(help.contains(&format!("\n{h}\n")), "{cmd}: no {h}");
+        }
+    }
+}
+
+/// Every `pmdshodh ...` line in the help examples runs (inputs replaced by a test fixture).
+/// The samtools pipe example is skipped: tests do not depend on samtools.
+#[test]
+fn help_examples_run() {
+    let dir = tmp_dir("help_examples");
+    let input = data("reads_random.sam");
+    let mut ran = 0;
+    for cmd in ["filter", "score", "damage"] {
+        let help = String::from_utf8(run(&[cmd, "--help"]).stdout).unwrap();
+        let examples = help.split("\nExamples:\n").nth(1).unwrap();
+        for line in examples.lines().map(str::trim) {
+            let Some(rest) = line.strip_prefix("pmdshodh ") else {
+                continue;
+            };
+            let args: Vec<String> = rest
+                .split_whitespace()
+                .map(|a| match a {
+                    "in.bam" => input.to_str().unwrap().to_string(),
+                    a if a.ends_with(".bam") || a.ends_with(".json") || a.ends_with(".tsv") => {
+                        dir.join(a).to_str().unwrap().to_string()
+                    }
+                    a => a.to_string(),
+                })
+                .collect();
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            let o = run(&args);
+            assert!(
+                o.status.success(),
+                "{line}: {}",
+                String::from_utf8_lossy(&o.stderr)
+            );
+            ran += 1;
+        }
+    }
+    assert_eq!(ran, 6, "two runnable examples per command");
+}
