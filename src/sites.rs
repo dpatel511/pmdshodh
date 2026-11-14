@@ -99,17 +99,25 @@ pub fn reference_along_read(
             CigarOp::Match(n) | CigarOp::SequenceMatch(n) | CigarOp::SequenceMismatch(n) => {
                 for _ in 0..n {
                     let read_base = seq[refs.len()].to_ascii_uppercase();
-                    refs.push(Some(md.next_aligned()?.unwrap_or(read_base)));
+                    refs.push(Some(
+                        md.next_aligned().map_err(md_hint)?.unwrap_or(read_base),
+                    ));
                 }
             }
             CigarOp::Insertion(n) | CigarOp::SoftClip(n) => refs.extend((0..n).map(|_| None)),
-            CigarOp::Deletion(n) => md.deletion(n)?,
+            CigarOp::Deletion(n) => md.deletion(n).map_err(md_hint)?,
             CigarOp::HardClip(_) => {}
             CigarOp::Unsupported => return Err("unsupported CIGAR operation (N or P)".into()),
         }
     }
-    md.finish()?;
+    md.finish().map_err(md_hint)?;
     Ok(refs)
+}
+
+/// MD tags that disagree with the alignment are usually stale (the read was realigned after MD
+/// was written), so say how to fix them.
+fn md_hint(e: String) -> String {
+    format!("{e} (MD does not match the alignment; recompute it with samtools calmd)")
 }
 
 /// Reference base at each SEQ position as PMDtools 0.60 rebuilds it, bug included
@@ -460,6 +468,23 @@ mod tests {
         assert!(refs("TAAC", &[CigarOp::Match(3)], "0C2").is_err()); // CIGAR vs SEQ length
         assert!(refs("TAAC", &[CigarOp::Match(4)], "0^C3").is_err()); // deletion not in CIGAR
         assert!(refs("TAAC", &[CigarOp::Match(2), CigarOp::Unsupported], "4").is_err());
+        // MD/CIGAR disagreements say how to fix them; the CIGAR/SEQ check does not mention MD.
+        let hint = "MD does not match the alignment; recompute it with samtools calmd";
+        assert!(
+            refs("TAAC", &[CigarOp::Match(4)], "0C2")
+                .unwrap_err()
+                .contains(hint)
+        );
+        assert!(
+            refs("TAAC", &[CigarOp::Match(4)], "0^C3")
+                .unwrap_err()
+                .contains(hint)
+        );
+        assert!(
+            !refs("TAAC", &[CigarOp::Match(3)], "0C2")
+                .unwrap_err()
+                .contains("calmd")
+        );
     }
 
     fn compat(seq: &str, cigar: &[CigarOp], md: &str) -> String {

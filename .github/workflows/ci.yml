@@ -71,3 +71,19 @@ jobs:
           done
           echo "records kept: $(wc -l < "$out/t1.txt")"
           test -s "$out/t1.txt"
+
+  msrv:
+    name: test (Rust 1.91, minimum supported)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Keep in step with rust-version in Cargo.toml.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.91.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test --locked

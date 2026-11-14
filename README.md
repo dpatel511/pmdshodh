@@ -37,7 +37,7 @@ pmdshodh implements this score as a single program, with no `samtools calmd | py
 
 ## Installation
 
-pmdshodh is currently installed from source. It needs Rust 1.85 or newer (tested with 1.99.1).
+pmdshodh is currently installed from source. It needs Rust 1.91 or newer, the minimum of its noodles dependency. CI tests 1.91 and the latest stable.
 
 ```bash
 git clone https://github.com/dpatel511/pmdshodh.git
