@@ -127,6 +127,7 @@ To reproduce:
 | pmdshodh `score`, 8 threads | 11.4 s | 16.8 s |
 
 - **On one thread, metaDMG is faster**: by 8% on BER11_L_NOuser and 15% on Motala3 (8% on both in the 2026-11-13 round).
+  - **Changed after this round:** `score` and `filter` no longer count damage tables without `--summary`. On the first 2 M reads of BER11_L_NOuser, `score -@ 1` then took 6.18 s against metaDMG's 8.23 s (CHANGELOG.md). The full inputs have not been rerun.
   - The two tools alternated run by run. metaDMG was faster in 4 of the 5 pairs on BER11_L_NOuser and in all 5 on Motala3.
   - On BER11_L_NOuser, the pair where pmdshodh was faster was metaDMG's slowest run (68.3 s).
 - The profile below suggests why: about a quarter of pmdshodh's single-thread time goes to damage tables that `score` and `filter` don't use.
@@ -192,7 +193,7 @@ A `perf record -F 1999 -g` profile of `score -@ 1` on the first 2,000,000 reads 
 - **Damage counting is the largest single cost.** Its tables are used only by `--summary` and the `damage` command, so `score` and `filter` without `--summary` spend about a quarter of their time on tables nobody reads.
 - metaDMG's `pmd` builds no such tables. This is the likely reason it is faster on one thread, but that has not been measured.
 
-This is a finding for later work, not a change in this release. Skipping damage counting when no `--summary` is asked for would not change any output.
+Since this round, `score` and `filter` skip damage counting when no `--summary` is asked for. Output is byte-identical (CHANGELOG.md).
 
 ## Correctness checks
 

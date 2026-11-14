@@ -36,6 +36,11 @@ Nothing has been released yet. The first release is planned as v0.1.0 (see [docs
     - `filter -t 3 -@ 1`: 7.58 s → 8.43 s (it used to take 1.2 cores).
   - Peak memory at `-@ 8` is 33–38 MB, because up to four batches are in memory.
 - Errors for MD tags that disagree with the alignment now suggest recomputing MD with `samtools calmd`. Such tags are usually stale after realignment.
+- `score` and `filter` count damage tables only when `--summary` is given; the `damage` command always counts them. Output is byte-identical. On the first 2,000,000 reads of BER11_L_NOuser (i5-13500H laptop, WSL, medians of 5 interleaved runs, monotonic clock):
+  - `score -@ 1`: 8.77 s → 6.18 s (metaDMG `pmd -@ 1`: 8.23 s; before the shared thread pool: 8.68 s);
+  - `filter -t 3 -@ 1`: 8.77 s → 6.17 s (before the shared thread pool: 7.95 s);
+  - `score -@ 8`: 1.60 s → 1.26 s; `filter -t 3 -@ 8`: 1.42 s → 1.04 s;
+  - with `--summary`, unchanged (1.43 s for `filter -t 3 -@ 8`).
 
 ### Fixed
 - `--pmdtools-compat` with several threads no longer slows down 2–5× from contention on glibc's allocator lock. The shared thread pool above made this worse, and the fix sizes compat's per-read buffers up front instead of growing them. On BER11_L_NOuser (14.0 M reads, 5 alternating runs), `filter --pmdtools-compat -@ 8` took 10.8–11.8 s instead of 23.9–66.6 s. Scores are unchanged.
