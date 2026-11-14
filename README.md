@@ -4,7 +4,7 @@
 
 pmdshodh scores every read in a SAM/BAM file for ancient DNA damage, keeps or removes reads by score, and summarises damage patterns. It uses the scoring model of [PMDtools](https://github.com/pontussk/PMDtools) 0.60, fixes PMDtools' known errors by default (`--pmdtools-compat` reproduces PMDtools exactly), reads and writes alignments directly, and runs on multiple threads.
 
-> **Status:** alpha (v0.1.0, not yet released). Scores have been validated against PMDtools on real and synthetic data. Performance benchmarks are in [docs/benchmarks.md](docs/benchmarks.md); packages and CRAM support are still to come.
+> **Status:** alpha (v0.1.0). Scores have been validated against PMDtools on real and synthetic data. Performance benchmarks are in [docs/benchmarks.md](docs/benchmarks.md); crates.io and Bioconda packages and CRAM support are still to come.
 
 ## Contents
 
@@ -37,7 +37,9 @@ pmdshodh implements this score as a single program, with no `samtools calmd | py
 
 ## Installation
 
-pmdshodh is currently installed from source. It needs Rust 1.91 or newer, the minimum of its noodles dependency. CI tests 1.91 and the latest stable.
+**Prebuilt binaries:** download the archive for your platform from [GitHub Releases](https://github.com/dpatel511/pmdshodh/releases), e.g. `pmdshodh-0.1.0-x86_64-unknown-linux-gnu.tar.gz`, and check it against `SHA256SUMS`. Linux binaries need glibc 2.17 or newer (CentOS/RHEL 7 and later). Builds are for Linux x86_64 and aarch64, macOS arm64 and x86_64, and Windows x86_64.
+
+**From source:** this needs Rust 1.91 or newer, the minimum of the noodles dependency. CI tests 1.91 and the latest stable.
 
 ```bash
 git clone https://github.com/dpatel511/pmdshodh.git
@@ -212,6 +214,7 @@ The complete list, with reasoning: [docs/design.md](docs/design.md) §5.
 ## Limitations
 
 - CRAM input is not yet supported.
+- Scores can differ in the last digits between operating systems, because each platform's math library rounds `ln` and `powf` differently. On the test fixture, Windows differed from Linux and macOS by at most 1.8e-15. Only a score this close to a threshold could be filtered differently.
 - Benchmarks cover one laptop and two double-stranded libraries: [docs/benchmarks.md](docs/benchmarks.md). In that round, metaDMG `pmd` scored reads 8–15% faster than `pmdshodh score` on one thread. Since then, `score` skips damage counting without `--summary`; on 2 M reads it took 6.18 s against metaDMG's 8.23 s (CHANGELOG.md).
 - No real single-stranded library has been tested; single-stranded parity rests on synthetic reads.
 - UDG-half damage *tables* do not yet match PMDtools (UDG-half *scores* do).

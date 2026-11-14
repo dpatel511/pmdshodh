@@ -6,7 +6,9 @@ Changes to the JSON run summary are listed with its `format_version`.
 
 ## [Unreleased]
 
-Nothing has been released yet. The first release is planned as v0.1.0 (see [docs/roadmap.md](docs/roadmap.md)).
+## [0.1.0] - 2026-11-14
+
+First release.
 
 ### Added
 - `filter` command: keep reads by PMD score and write SAM or BAM, with an `@PG` header line and an optional score tag.
@@ -17,6 +19,7 @@ Nothing has been released yet. The first release is planned as v0.1.0 (see [docs
 - Multi-threaded scoring and BGZF compression; output is identical for any thread count.
 - JSON run summary (`format_version` 1) with read counts, skipped reads by reason, a score histogram and damage tables.
 - Parity tests against PMDtools on synthetic and real reads.
+- Prebuilt binaries on GitHub Releases for Linux x86_64 and aarch64 (glibc 2.17 or newer), macOS arm64 and x86_64, and Windows x86_64, with SHA-256 checksums. Scores agree across these platforms to within 2e-15: Linux and macOS give byte-identical output on the test fixture, and Windows differs in the last digits.
 - Minimum supported Rust version 1.91 (the minimum of noodles 0.119), declared in `Cargo.toml` and tested in CI. The README used to say 1.85, which was never true.
 - README, design notes, benchmark plan and roadmap.
 
@@ -48,3 +51,6 @@ Nothing has been released yet. The first release is planned as v0.1.0 (see [docs
 - `--pmdtools-compat` with several threads no longer slows down 2–5× from contention on glibc's allocator lock. The shared thread pool above made this worse, and the fix sizes compat's per-read buffers up front instead of growing them. On BER11_L_NOuser (14.0 M reads, 5 alternating runs), `filter --pmdtools-compat -@ 8` took 10.8–11.8 s instead of 23.9–66.6 s. Scores are unchanged.
 - `score -o -` writes to stdout; it used to create a file named `-`.
 - `--pmdtools-compat` now also reproduces PMDtools 0.60 for lowercase reference bases in MD (never counted as C or G) and for reverse-strand reads whose MD contains characters PMDtools drops when reverse-complementing (e.g. lowercase `n`). Default scoring is unchanged; both are listed as departures in docs/design.md.
+
+[Unreleased]: https://github.com/dpatel511/pmdshodh/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/dpatel511/pmdshodh/releases/tag/v0.1.0
