@@ -7,7 +7,7 @@ Changes to the JSON run summary are listed with its `format_version`.
 ## [Unreleased]
 
 ### Added
-- PyPI packaging: wheels that carry the `pmdshodh` binary (Linux x86_64 and aarch64 with glibc 2.17 or newer, macOS arm64 and x86_64, Windows x86_64), built and published by a workflow with PyPI trusted publishing.
+- PyPI packaging: wheels that carry the `pmdshodh` binary (Linux x86_64 and aarch64 with glibc 2.17 or newer, macOS arm64 and x86_64, Windows x86_64), built and published by a workflow with PyPI trusted publishing. Version 0.1.0 was published to PyPI on 2026-11-15, built from the `v0.1.0` tag.
 
 ## [0.1.0] - 2026-11-14
 
