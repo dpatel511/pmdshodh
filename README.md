@@ -4,7 +4,7 @@
 
 pmdshodh scores every read in a SAM/BAM file for ancient DNA damage, keeps or removes reads by score, and summarises damage patterns. It uses the scoring model of [PMDtools](https://github.com/pontussk/PMDtools) 0.60, fixes PMDtools' known errors by default (`--pmdtools-compat` reproduces PMDtools exactly), reads and writes alignments directly, and runs on multiple threads.
 
-> **Status:** alpha (v0.1.0). Scores have been validated against PMDtools on real and synthetic data. Performance benchmarks are in [docs/benchmarks.md](docs/benchmarks.md); PyPI and Bioconda packages and CRAM support are still to come.
+> **Status:** alpha (v0.1.0). Scores have been validated against PMDtools on real and synthetic data. Performance benchmarks are in [docs/benchmarks.md](docs/benchmarks.md); A Bioconda package and CRAM support are still to come.
 
 ## Contents
 
@@ -36,6 +36,8 @@ pmdshodh implements this score as a single program, with no `samtools calmd | py
 - **Correct by default, exact on request.** Known PMDtools bugs are fixed, and `--pmdtools-compat` reproduces PMDtools exactly for comparisons.
 
 ## Installation
+
+**pip:** `pip install pmdshodh` installs the `pmdshodh` command; the wheels contain the compiled binary only. Wheels are built for Linux x86_64 and aarch64 (glibc 2.17 or newer), macOS arm64 and x86_64, and Windows x86_64.
 
 **Prebuilt binaries:** download the archive for your platform from [GitHub Releases](https://github.com/dpatel511/pmdshodh/releases), e.g. `pmdshodh-0.1.0-x86_64-unknown-linux-gnu.tar.gz`, and check it against `SHA256SUMS`. Linux binaries need glibc 2.17 or newer (CentOS/RHEL 7 and later). Builds are for Linux x86_64 and aarch64, macOS arm64 and x86_64, and Windows x86_64.
 
