@@ -1,0 +1,33 @@
+# PyPI packaging: the wheel carries the pmdshodh binary only (no Python module), so
+# `pip install pmdshodh` puts the `pmdshodh` command on PATH. Version and description come from
+# Cargo.toml.
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "pmdshodh"
+dynamic = ["version", "description"]
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.8"
+authors = [{ name = "Dev Patel" }]
+keywords = ["ancient-dna", "bioinformatics", "bam", "damage", "pmdtools"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Rust",
+  "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+
+[project.urls]
+Repository = "https://github.com/dpatel511/pmdshodh"
+Changelog = "https://github.com/dpatel511/pmdshodh/blob/main/CHANGELOG.md"
+
+[tool.maturin]
+bindings = "bin"
