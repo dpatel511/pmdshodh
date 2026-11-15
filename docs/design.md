@@ -253,3 +253,44 @@ The options considered are kept below for the record.
 **Not design decisions, still yours:**
 - whether to confirm and report the eager 2.5.3 `--CpG` finding;
 - whether to contact metaDMG.
+
+## 11. Reference-based scoring and CRAM (agreed 2026-11-15)
+
+Roadmap milestone 4. Research behind the choices:
+- samtools reads a reference with `-T, --reference`. It also searches `REF_PATH`/`REF_CACHE`, which can download from EBI.
+- DamageProfiler and mapDamage2 take `-r`. mapDamage2 requires the FASTA's names and lengths to match the BAM header.
+- metaDMG-cpp takes `-f/--fasta`, which it requires for CRAM.
+- PMDtools needs MD tags, so the nf-core `pmdtools/filter` module always runs `samtools calmd in.bam ref`, pipes that into PMDtools, then into `samtools view`.
+
+**Option:** `-r, --reference FILE`, on `filter`, `score` and `damage`. No other new flags.
+- The file is a FASTA, plain or bgzip-compressed. It needs its index: `.fai`, plus `.gzi` if compressed.
+- A missing index is an input error (exit 2) suggesting `samtools faidx FILE`. pmdshodh does not write index files next to the user's reference.
+
+**Behaviour:**
+1. **With `-r`, the reference is the truth.** Each read's reference bases come from the FASTA, not from MD, which equals scoring after `samtools calmd`. `pmdshodh filter -r ref.fa -t 3 in.bam -o out.bam` replaces `samtools calmd | pmdtools | samtools view`.
+2. **Stale MD tags are counted.** Reads whose MD tag disagrees with the reference are scored from the reference and counted. One stderr line reports the count unless `--quiet`, and the summary records it. Such tags are typically left stale by realignment, as in the ERR1892229 USER libraries (docs/benchmarks.md).
+3. **Without `-r`:** behaviour is unchanged and MD is required. The error for a read without MD names `-r` as well as `samtools calmd`.
+4. **Checked before any record is read:** every `@SQ` in the header must be in the index with the same length. Otherwise it is an input error, which catches a wrong genome build. MD5 (`M5`) checksums are not computed: hashing a whole genome would cost more than scoring.
+5. **CRAM input** is detected from the file contents and decoded with `-r`.
+   - CRAM without `-r` is an input error.
+   - `REF_PATH`, `REF_CACHE` and network downloads are not used, so runs work offline and are reproducible.
+6. **`--pmdtools-compat -r`** builds MD from the reference, then applies PMDtools' MD-based reconstruction with its bugs. It must equal `samtools calmd | pmdtools 0.60` on the same reads.
+7. **Bounded memory:** the reference is read through its index in fixed-size blocks with a capped cache (target about 64 MB, to be measured).
+   - This works for sorted and unsorted input and never loads a whole genome or chromosome set.
+   - noodles' default reference repository caches whole sequences without a limit, so it is not used as is.
+8. **Output:** kept records are written unchanged. pmdshodh does not add or correct MD tags; filtering only drops records (CLAUDE.md §7).
+9. **Summary:** `format_version` becomes 2. It adds the input format (sam/bam/cram), the reference path, whether reference bases came from MD or the FASTA, and counts of MD tags checked and disagreeing.
+
+**Deferred:** CRAM output (`filter -o out.cram`). Decoding a CRAM can regenerate tags such as MD and NM, and kept records must not change. It needs a round-trip test proving that decoded records are unchanged before it is offered.
+
+**Done when:**
+- **Parity with calmd:** on BER11_L_NOuser and Motala3, scores with `-r` equal the scores after `samtools calmd`, for every read.
+- **Parity in compat mode:** `--pmdtools-compat -r` equals PMDtools 0.60 run on the calmd output.
+- **CRAM:** a CRAM written by `samtools view -C` gives the same scores as its BAM.
+- **Tests:**
+  - a missing index, and a header that doesn't match the reference;
+  - CRAM without `-r`;
+  - reads without MD, with and without `-r`;
+  - a stale MD tag being counted;
+  - unsorted input;
+  - identical output for any thread count.

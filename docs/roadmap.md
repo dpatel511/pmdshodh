@@ -1,8 +1,18 @@
 # Roadmap — agreed 2026-11-11
 
-pmdshodh aims to be both:
-- a **drop-in replacement** for PMDtools in pipelines such as nf-core/eager;
-- a **standalone tool** that people choose over PMDtools, metaDMG, DamageProfiler or mapDamage when working on their own data.
+**Positioning (narrowed 2026-11-15): the maintained per-read damage filter.**
+- **Scores:** the same as PMDtools, plus documented fixes.
+- **Speed and install:** much faster, and installable with pip and Bioconda.
+- **Input:** one step from BAM or CRAM with `-r`, with no separate `samtools calmd`.
+- **QC:** damage QC built in, for MultiQC.
+- **Drop-in:** it is a drop-in replacement for PMDtools in pipelines such as nf-core/eager.
+- **Not a general damage profiler:** pmdshodh does not compete with DamageProfiler, mapDamage2 or AdDeam on that. Its damage tables and the planned HTML report are QC around filtering.
+- **What sets it apart from PMDtools:** fitted damage parameters (milestone 6).
+
+The 2026-11-11 plan also aimed to compete directly with metaDMG, DamageProfiler and mapDamage. The landscape checked on 2026-11-15:
+- Only PMDtools and ngsBriggs (a preprint, which needs an external contamination estimate) filter individual reads.
+- metaDMG `pmd` scores reads but does not filter them.
+- PyDamage works on contigs, and bamRefine masks damaged positions.
 
 Each milestone ends with passing tests and, where a claim is made, measured evidence (CLAUDE.md §5, §7).
 
@@ -18,7 +28,7 @@ Each milestone ends with passing tests and, where a claim is made, measured evid
 | 1 | **CI** | GitHub Actions on Linux and macOS: `fmt`, `clippy`, `test`; `samtools quickcheck` on BAMs written by the tests | Green on every PR |
 | 2 | **Benchmarks** | [benchmark-plan.md](benchmark-plan.md): vs the PMDtools pipeline and metaDMG `pmd`, thread scaling, memory | `docs/benchmarks.md` (raw logs kept locally, not committed) |
 | 3 | **Easy installation → v0.1.0** | Prebuilt binaries (Linux x86_64/aarch64, macOS, Windows) on GitHub Releases; crates.io; Bioconda recipe; pip (maturin) considered | Users can install without Rust; names re-checked before publishing |
-| 4 | **Reference-based scoring and CRAM** | `-r/--reference ref.fa`: score reads without MD tags by reading the reference; CRAM input | Parity: scores with `-r` equal scores from `calmd` + MD on the same data |
+| 4 | **Reference-based scoring and CRAM** | `-r/--reference ref.fa`: score from the reference instead of MD, count stale MD tags, check the header against the reference; CRAM input (CRAM output deferred). Design: docs/design.md §11 | Parity: scores with `-r` equal scores after `samtools calmd` on the same data; `--pmdtools-compat -r` equals `calmd \| pmdtools` |
 | 5 | **Damage report** | HTML (and PNG) report: C→T/G→A by position, score histogram, read counts, first-base rate; generated from the JSON summary | Report checked on the eager test BAMs; JSON stays the source of truth |
 | 6 | **Fitted damage parameters (opt-in)** | Estimate P and C (and optionally the background) from the sample's damage profile, then score with them; record fitted values and fit quality in the summary | Validated on simulated data with known parameters and on real ds/UDG-half samples; default unchanged |
 | 7 | **Integration** | MultiQC module; nf-core module `pmdshodh/filter`; proposal to nf-core/eager (contact needs approval) | Modules accepted upstream |
