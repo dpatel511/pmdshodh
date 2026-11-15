@@ -1,23 +1,33 @@
 name: Release
 
-# A version tag (e.g. v0.1.0) builds every binary and creates a *draft* GitHub Release; a person
-# reviews and publishes it. Pull requests that touch this file or the manifest run the builds and
-# checks without releasing anything.
+# A version tag (e.g. v0.1.0) builds every binary, creates a *draft* GitHub Release (a person
+# reviews and publishes it) and publishes wheels to PyPI with trusted publishing (no token stored;
+# the PyPI publisher is registered for this file, release.yml). "Run workflow" with a tag builds
+# and publishes only that tag's PyPI wheels, using the packaging files from the branch the workflow
+# runs on. Pull requests that touch release packaging build and check everything without publishing.
 on:
   push:
     tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag whose wheels to build and publish to PyPI, e.g. v0.1.0"
+        required: true
   pull_request:
-    paths: [".github/workflows/release.yml", "Cargo.toml", "Cargo.lock"]
+    paths: [".github/workflows/release.yml", "pyproject.toml", "Cargo.toml", "Cargo.lock"]
 
 permissions:
   contents: read
 
 env:
   CARGO_TERM_COLOR: always
+  SOURCE_REF: ${{ inputs.tag || github.ref }}
 
 jobs:
   build:
     name: build (${{ matrix.target }})
+    # A manual run is for PyPI only; the GitHub release of that tag already exists.
+    if: github.event_name != 'workflow_dispatch'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -186,3 +196,110 @@ jobs:
           (cd dist && cat *.sha256 > SHA256SUMS)
           gh release create "$GITHUB_REF_NAME" --draft --verify-tag \
             --title "pmdshodh $version" --notes-file notes.md dist/*
+
+  wheels:
+    name: wheel (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux wheels are built in manylinux2014 (glibc 2.17), as the release binaries are.
+          - { name: linux-x86_64, os: ubuntu-24.04, target: x86_64, manylinux: "2014", run: true }
+          - { name: linux-aarch64, os: ubuntu-24.04-arm, target: aarch64, manylinux: "2014", run: true }
+          - { name: macos-arm64, os: macos-latest, target: aarch64, manylinux: "", run: true }
+          - { name: macos-x86_64, os: macos-latest, target: x86_64, manylinux: "", run: false }
+          - { name: windows-x86_64, os: windows-latest, target: x64, manylinux: "", run: true }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_REF }}
+      - uses: actions/checkout@v4
+        with:
+          path: _packaging
+          sparse-checkout: pyproject.toml
+          sparse-checkout-cone-mode: false
+      - name: Packaging files
+        shell: bash
+        run: |
+          [ -f pyproject.toml ] || cp _packaging/pyproject.toml .
+          rm -rf _packaging
+
+      - uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux || 'auto' }}
+          args: --release --locked --out dist
+
+      - uses: actions/setup-python@v5
+        if: matrix.run
+        with:
+          python-version: "3.12"
+
+      - name: Install and smoke-test the wheel
+        if: matrix.run
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m venv venv
+          if [ -f venv/Scripts/activate ]; then source venv/Scripts/activate; else source venv/bin/activate; fi
+          pip install --no-index dist/*.whl
+          pmdshodh --version
+          pmdshodh score --quiet tests/data/reads_random.sam -o smoke.tsv
+          test "$(wc -l < smoke.tsv)" -eq 1501
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.name }}
+          path: dist/*.whl
+
+  sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_REF }}
+      - uses: actions/checkout@v4
+        with:
+          path: _packaging
+          sparse-checkout: pyproject.toml
+          sparse-checkout-cone-mode: false
+      - name: Packaging files
+        run: |
+          [ -f pyproject.toml ] || cp _packaging/pyproject.toml .
+          rm -rf _packaging
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  publish-pypi:
+    if: github.event_name != 'pull_request'
+    needs: [wheels, sdist]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Check versions match the tag
+        run: |
+          set -euo pipefail
+          ls dist
+          test "$(ls dist | wc -l)" -eq 6
+          version=${SOURCE_REF#refs/tags/}
+          version=${version#v}
+          for f in dist/*; do
+            case "$(basename "$f")" in
+              pmdshodh-"$version"-*.whl|pmdshodh-"$version".tar.gz) ;;
+              *) echo "::error::$f is not version $version"; exit 1 ;;
+            esac
+          done
+      - uses: pypa/gh-action-pypi-publish@release/v1
