@@ -207,6 +207,7 @@ pmdshodh corrects these PMDtools behaviours by default. Use `--pmdtools-compat` 
 | Hard-clipped reads | Dropped | Scored |
 | Existing `DS:Z` tag, or `DS:Z:` text in qualities | Crash | Handled |
 | Empty input | Crash | Empty output, exit 0 |
+| BAM without its end-of-file marker (cut at a block boundary) | `samtools view` warns and passes on the reads before the cut | Error (exit 2), no output file |
 | Damage site ≥ 1,000 bp from a read end, or hundreds of mismatches in one read | Crash | Scored |
 | `--first` (first-base damage rate with standard error) | Crashes in the 0.60 release | Reported in the JSON summary |
 
