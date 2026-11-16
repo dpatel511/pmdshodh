@@ -88,7 +88,17 @@ impl Loader {
         })
     }
 
+    /// Read and check a whole sequence (see [`Loader::read`] and [`check_md5`]).
     fn load(&mut self, name: &[u8]) -> io::Result<Vec<u8>> {
+        let bases = self.read(name)?;
+        if let Some(expected) = self.md5.get(name) {
+            check_md5(name, &bases, expected)?;
+        }
+        Ok(bases)
+    }
+
+    /// Read a whole sequence, uppercased, without checking it.
+    fn read(&mut self, name: &[u8]) -> io::Result<Vec<u8>> {
         let index: &[fasta::fai::Record] = self.reader.index().as_ref();
         let record = index
             .iter()
@@ -101,26 +111,32 @@ impl Loader {
                 .query(&Region::new(name, ..))
                 .map(|record| record.sequence().as_ref().to_ascii_uppercase()),
         }?;
-        if let Some(expected) = self.md5.get(name) {
-            use md5::Digest;
-            let actual: String = md5::Md5::digest(&bases)
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect();
-            if actual != *expected {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "reference sequence {} does not match the CRAM header's M5 checksum \
-                         (is -r the reference the CRAM was written with?)",
-                        String::from_utf8_lossy(name)
-                    ),
-                ));
-            }
-        }
         Ok(bases)
     }
 }
+
+/// Check an uppercased sequence against the CRAM header's `M5` (lowercase hex).
+fn check_md5(name: &[u8], bases: &[u8], expected: &str) -> io::Result<()> {
+    use md5::Digest;
+    let actual: String = md5::Md5::digest(bases)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    if actual != expected {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "reference sequence {} does not match the CRAM header's M5 checksum \
+                 (is -r the reference the CRAM was written with?)",
+                String::from_utf8_lossy(name)
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// The result of an `M5` check, which may run on the thread pool.
+pub type Md5Check = std::sync::mpsc::Receiver<io::Result<()>>;
 
 /// The repository's adapter. noodles holds the repository's write lock while the adapter runs,
 /// which stops every decoding thread, so [`Reference::cram_batch`] loads sequences beforehand and
@@ -244,11 +260,15 @@ impl Reference {
     /// When the batch moves to another reference sequence, the cache is cleared once it holds more
     /// than [`CRAM_CACHED_BASES`]; sorted input then loads each sequence about once (the one the
     /// batch starts on is loaded again after a clear).
+    ///
+    /// The sequences loaded here are checked against the header's `M5` on the thread pool (with
+    /// one thread, right away), so the reading thread is not held up; the batch must not be used
+    /// until every returned check has passed.
     pub fn cram_batch(
         &mut self,
         header: &noodles::sam::Header,
         ids: &[usize],
-    ) -> io::Result<fasta::Repository> {
+    ) -> io::Result<(fasta::Repository, Vec<Md5Check>)> {
         let c = self
             .cram
             .as_mut()
@@ -263,6 +283,7 @@ impl Reference {
         if let Some(&last) = ids.last() {
             c.last = Some(last);
         }
+        let mut checks = Vec::new();
         for &id in ids {
             if c.cached.contains(&id) {
                 continue;
@@ -273,12 +294,28 @@ impl Reference {
                     "container reference sequence ID is not in the header",
                 )
             })?;
-            let bases = c.loader.load(name)?;
+            let bases = c.loader.read(name)?;
             *c.staged.lock().unwrap() = Some((name.to_vec(), bases));
-            c.repository.get(name).transpose()?;
+            let sequence = c.repository.get(name).transpose()?;
             c.cached.insert(id);
+            if let (Some(sequence), Some(expected)) = (
+                sequence,
+                c.loader.md5.get(AsRef::<[u8]>::as_ref(name)).cloned(),
+            ) {
+                let (tx, rx) = std::sync::mpsc::sync_channel(1);
+                let name = name.to_vec();
+                let check = move || {
+                    let _ = tx.send(check_md5(&name, sequence.as_ref().as_ref(), &expected));
+                };
+                if rayon::current_num_threads() > 1 {
+                    rayon::spawn(check);
+                } else {
+                    check();
+                }
+                checks.push(rx);
+            }
         }
-        Ok(c.repository.clone())
+        Ok((c.repository.clone(), checks))
     }
 
     /// Length of the named sequence, if the reference has it.

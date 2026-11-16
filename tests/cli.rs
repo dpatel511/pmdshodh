@@ -1260,10 +1260,24 @@ fn cram_input_matches_its_sam_and_needs_the_reference() {
     text[at] = if text[at] == b'A' { b'C' } else { b'A' };
     fs::write(&wrong, text).unwrap();
     fs::copy(format!("{fasta}.fai"), dir.join("wrong.fa.fai")).unwrap();
-    let o = run(&["score", "--quiet", "-r", wrong.to_str().unwrap(), cram]);
-    assert_eq!(o.status.code(), Some(2));
-    // Caught by the header M5 check before noodles' slice MD5 check.
-    assert!(String::from_utf8_lossy(&o.stderr).contains("M5 checksum"));
+    // Caught by the header M5 check before noodles' slice MD5 check; with several threads the
+    // check runs on the pool.
+    for threads in ["1", "2"] {
+        let o = run(&[
+            "score",
+            "--quiet",
+            "-@",
+            threads,
+            "-r",
+            wrong.to_str().unwrap(),
+            cram,
+        ]);
+        assert_eq!(o.status.code(), Some(2), "-@ {threads}");
+        assert!(
+            String::from_utf8_lossy(&o.stderr).contains("M5 checksum"),
+            "-@ {threads}"
+        );
+    }
 
     // --max-reads stops at the same read in CRAM (counted from container headers) as in SAM.
     let mut summaries = Vec::new();
