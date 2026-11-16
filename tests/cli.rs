@@ -1399,3 +1399,45 @@ fn cram_multi_reference_slice_pairs_and_wrong_reference() {
     assert_eq!(header.reference_sequences().len(), 2);
     assert!(records.is_empty());
 }
+
+/// A BAM whose blocks are whole but whose BGZF end-of-file marker is missing (e.g. a copy cut at
+/// a block boundary) used to be read silently, losing the reads after the cut. It is now an input
+/// error, and filter leaves no output file.
+#[test]
+fn bam_without_eof_marker_is_an_error() {
+    let dir = tmp_dir("bam_no_eof");
+    let bam = dir.join("all.bam");
+    let o = run(&[
+        "filter",
+        "--quiet",
+        "-t",
+        "-1000",
+        data("reads_random.sam").to_str().unwrap(),
+        "-o",
+        bam.to_str().unwrap(),
+    ]);
+    assert!(o.status.success());
+    let bytes = fs::read(&bam).unwrap();
+    let cut = dir.join("cut.bam");
+    fs::write(&cut, &bytes[..bytes.len() - 28]).unwrap();
+    let out = dir.join("out.bam");
+    for args in [
+        &["score", "--quiet", cut.to_str().unwrap(), "-o", "-"][..],
+        &[
+            "filter",
+            "-t",
+            "3",
+            cut.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+        ][..],
+    ] {
+        let o = run(args);
+        assert_eq!(o.status.code(), Some(2), "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&o.stderr).contains("without the BGZF end-of-file marker"),
+            "{args:?}"
+        );
+    }
+    assert!(!out.exists());
+}
