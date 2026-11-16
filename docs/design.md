@@ -72,7 +72,7 @@ pmdshodh damage  [OPTIONS] <INPUT> [-o FILE]      damage summary only (JSON)
 | `--no-clips` | `--noclips` | off | drops reads with soft clips |
 | `--no-indels` | `--noindels` | off | drops reads with I or D |
 | `--skip-flags <list>` | — | none (D2: score all, like PMDtools) | e.g. `secondary,supplementary,duplicate,qcfail` |
-| `-r, --reference <FASTA>` | — | none | needed only to decode CRAM. **Not implemented yet** (step 4 reads SAM/BAM only) |
+| `-r, --reference <FASTA>` | — | none | reference bases from the FASTA instead of MD; required for CRAM input (§11) |
 | `-@, --threads <N>` | — | 1 | output identical for any N |
 | `--summary <FILE>` | — | none | JSON summary (section 6) |
 | `-n, --max-reads <N>` | `-n` | all | `damage` only; stops cleanly, exit 0 |
@@ -135,6 +135,8 @@ Default = PMDtools behaviour, except where marked. Every departure gets a regres
 | `@PG` header line | none | added | allowed by CLAUDE.md §7 |
 
 ## 6. Summary JSON (`format_version: 1`)
+
+This section shows version 1. Version 2 adds `input_format` and a `reference` section (§11, item 9).
 
 One file per run. No timestamps, so it is identical for identical inputs and options, whatever the thread count.
 
@@ -274,11 +276,16 @@ Roadmap milestone 4. Research behind the choices:
 5. **CRAM input** is detected from the file contents and decoded with `-r`.
    - CRAM without `-r` is an input error.
    - `REF_PATH`, `REF_CACHE` and network downloads are not used, so runs work offline and are reproducible.
+   - noodles checks each slice's reference MD5, so a reference that differs under the reads is an input error (as implemented, 2026-11-16).
+   - Containers are read on the serial thread and decoded on the pool, several at once, in input order.
 6. **`--pmdtools-compat -r`** builds MD from the reference, then applies PMDtools' MD-based reconstruction with its bugs. It must equal `samtools calmd | pmdtools 0.60` on the same reads.
 7. **Bounded memory:** the reference is read through its index in fixed-size blocks with a capped cache (target about 64 MB, to be measured).
    - This works for sorted and unsorted input and never loads a whole genome or chromosome set.
    - noodles' default reference repository caches whole sequences without a limit, so it is not used as is.
+   - **Exception, CRAM:** noodles decodes a CRAM slice against its whole reference sequence, so CRAM input loads whole sequences. They are cached until more than 256 Mi bases have been loaded and the input moves to another sequence, then cleared. Measured 2026-11-16 (`pmdshodh score -@ 8 -r`, one run each, WSL Ubuntu 24.04): peak RSS 1.24 GB on BER11_L_NOuser.cram (equCab2) and 1.50 GB on Motala3.cram (human_g1k_v37), against 10–41 MB for BAM input. Unsorted CRAM, or containers spanning several sequences, can hold more sequences at once; that was not measured.
 8. **Output:** kept records are written unchanged. pmdshodh does not add or correct MD tags; filtering only drops records (CLAUDE.md §7).
+   - From CRAM, "unchanged" means as stored in the CRAM. htslib does not store MD and NM tags it can regenerate, and samtools adds them back when it decodes; pmdshodh does not. Kept records equal `samtools view --input-fmt-option decode_md=0` of the same CRAM. MD tags htslib did store (ones that differ from the reference, e.g. stale ones) are kept.
+   - Whether to regenerate MD/NM for CRAM input is an open decision: it would add tags, which CLAUDE.md §7 allows only by agreement.
 9. **Summary:** `format_version` becomes 2. It adds the input format (sam/bam/cram), the reference path, whether reference bases came from MD or the FASTA, and counts of MD tags checked and disagreeing.
 
 **Deferred:** CRAM output (`filter -o out.cram`). Decoding a CRAM can regenerate tags such as MD and NM, and kept records must not change. It needs a round-trip test proving that decoded records are unchanged before it is offered.
@@ -286,7 +293,7 @@ Roadmap milestone 4. Research behind the choices:
 **Done when:**
 - **Parity with calmd:** on BER11_L_NOuser and Motala3, scores with `-r` equal the scores after `samtools calmd`, for every read.
 - **Parity in compat mode:** `--pmdtools-compat -r` equals PMDtools 0.60 run on the calmd output.
-- **CRAM:** a CRAM written by `samtools view -C` gives the same scores as its BAM.
+- **CRAM:** a CRAM written by `samtools view -C` gives the same scores as its BAM. **Met 2026-11-16:** samtools 1.25 CRAMs of BER11_L_NOuser (14,006,183 reads) and Motala3 (23,622,338 reads) give byte-identical `score -r` output to their BAMs at `-@ 8`, default and `--pmdtools-compat` (and default at `-@ 1`). `filter -r -t 3` keeps the same reads (1,029,380 and 301,706), and every kept record, all fields and tags in order, equals the output from `samtools view --input-fmt-option decode_md=0` of the CRAM.
 - **Tests:**
   - a missing index, and a header that doesn't match the reference;
   - CRAM without `-r`;

@@ -2,9 +2,9 @@
 
 **Fast, maintained post-mortem damage (PMD) scoring and filtering for ancient DNA alignments.**
 
-pmdshodh scores every read in a SAM/BAM file for ancient DNA damage, keeps or removes reads by score, and summarises damage patterns. It uses the scoring model of [PMDtools](https://github.com/pontussk/PMDtools) 0.60, fixes PMDtools' known errors by default (`--pmdtools-compat` reproduces PMDtools exactly), reads and writes alignments directly, and runs on multiple threads.
+pmdshodh scores every read in a SAM, BAM or CRAM file for ancient DNA damage, keeps or removes reads by score, and summarises damage patterns. It uses the scoring model of [PMDtools](https://github.com/pontussk/PMDtools) 0.60, fixes PMDtools' known errors by default (`--pmdtools-compat` reproduces PMDtools exactly), reads and writes alignments directly, and runs on multiple threads.
 
-> **Status:** alpha (v0.1.0). Scores have been validated against PMDtools on real and synthetic data. Performance benchmarks are in [docs/benchmarks.md](docs/benchmarks.md); A Bioconda package and CRAM support are still to come.
+> **Status:** alpha (v0.1.0). Scores have been validated against PMDtools on real and synthetic data. Performance benchmarks are in [docs/benchmarks.md](docs/benchmarks.md); a Bioconda package is still to come.
 
 ## Contents
 
@@ -29,7 +29,7 @@ pmdshodh implements this score as a single program, with no `samtools calmd | py
 ## Features
 
 - **PMDtools-compatible scores.** It uses the same likelihood model, defaults and options (`--threshold`, `--ss`, `--CpG`, `--UDGhalf`, `-m`, `-q`, …). Single-stranded (`--ss`) scores follow the paper's model and are lower than PMDtools'; see [Differences that change scores](#differences-that-change-scores).
-- **Direct SAM/BAM input and output.** Kept records are written unchanged and in input order, with an `@PG` header line.
+- **Direct SAM/BAM/CRAM input, SAM/BAM output.** Kept records are written unchanged and in input order, with an `@PG` header line. CRAM is decoded with the reference given by `-r`.
 - **Multi-threaded** scoring and BGZF compression. Results are identical for any thread count.
 - **JSON run summary** with read counts, a score histogram and damage tables, designed for MultiQC.
 - **Robust input handling.** It never drops reads silently: every skipped read is counted by reason, and invalid input stops with a clear error.
@@ -52,6 +52,7 @@ cargo build --release
 
 **Input requirement:** pmdshodh needs each read's reference bases. Either pass the reference with `-r`, or give it reads with an **MD tag**.
 - **With `-r ref.fa`:** the FASTA must be indexed with `samtools faidx`. Reference bases come from the FASTA, so reads need no MD tag. Any MD tags present are checked against the reference, and stale ones are counted.
+- **CRAM input** always needs `-r`, with the reference the CRAM was written against. Each slice's MD5 checksum is checked against it, so a different reference is an input error rather than silently wrong scores. `REF_PATH`, `REF_CACHE` and downloads are not used.
 - **Without `-r`:** every mapped read needs an MD tag. If your aligner doesn't write one, add it with `samtools calmd -b input.bam reference.fa > input.md.bam`.
 
 ## Quick start
@@ -71,6 +72,9 @@ pmdshodh score sample.bam -o sample.scores.tsv
 
 # Damage summary only
 pmdshodh damage sample.bam -o sample.damage.json
+
+# CRAM input (needs its reference); writes BAM
+pmdshodh filter --threshold 3 -r ref.fa sample.cram -o sample.pmd3.bam
 ```
 
 ## Commands
@@ -133,7 +137,7 @@ PMDtools option names are accepted as aliases (shown in the second column).
 
 ### Alignments (`filter`)
 
-- Kept records are unchanged (identical when decoded) apart from the optional score tag.
+- Kept records are unchanged (identical when decoded) apart from the optional score tag. From CRAM input, records are written as stored in the CRAM: MD and NM tags that htslib left out because it can regenerate them are not added back (see [Limitations](#limitations)).
 - Input order is preserved.
 - The input header is copied, and one `@PG` line records the command.
 - Output files are written under a temporary name and renamed only on success, so a failed run never leaves a partial file.
@@ -145,7 +149,8 @@ A single file per run, versioned with `format_version` (currently `2`). It conta
 | Section | Contents |
 |---|---|
 | `tool`, `command`, `mode`, `model`, `filters` | Version, command line, library and treatment, model parameters, thresholds |
-| `reference` | The `-r` FASTA (if any); whether reference bases came from MD or the FASTA; with `-r`, how many scored reads had MD tags agreeing, disagreeing or absent |
+| `input_format` | `sam`, `bam` or `cram`, detected from the file contents |
+| `reference` | The `-r` FASTA (if any); whether reference bases came from MD or the FASTA; with `-r`, how many scored reads had MD tags agreeing, disagreeing or absent (for CRAM, only MD tags stored in the file count) |
 | `reads` | Input, scored, kept and removed counts; skipped reads by reason; flag counts (duplicate, secondary, supplementary, …) |
 | `score_histogram`, `length_histogram` | Score distribution (0.5-wide bins from −20 to 40), read lengths |
 | `damage` | Counts of read bases A/C/G/T at reference C and G, by position from each molecule end; first-base C→T rate with standard error |
@@ -215,7 +220,9 @@ The complete list, with reasoning: [docs/design.md](docs/design.md) §5.
 
 ## Limitations
 
-- CRAM input is not yet supported.
+- CRAM is input only; `filter` writes SAM or BAM.
+- From CRAM input, kept records have no MD or NM tag unless the CRAM stored one. htslib usually leaves these tags out and regenerates them on decoding; pmdshodh does not. Run `samtools calmd` on the output if a later step needs MD.
+- CRAM input loads whole reference sequences, because noodles decodes against them. Peak memory at `-@ 8` was 1.24 GB (horse) and 1.50 GB (human) in one run each, against 10–41 MB for BAM input ([docs/design.md](docs/design.md) §11).
 - Scores can differ in the last digits between operating systems, because each platform's math library rounds `ln` and `powf` differently. On the test fixture, Windows differed from Linux and macOS by at most 1.8e-15. Only a score this close to a threshold could be filtered differently.
 - Benchmarks cover one laptop and two double-stranded libraries: [docs/benchmarks.md](docs/benchmarks.md). In that round, metaDMG `pmd` scored reads 8–15% faster than `pmdshodh score` on one thread. Since then, `score` skips damage counting without `--summary`; on 2 M reads it took 6.18 s against metaDMG's 8.23 s (CHANGELOG.md).
 - No real single-stranded library has been tested; single-stranded parity rests on synthetic reads.
