@@ -6,6 +6,9 @@ Changes to the JSON run summary are listed with its `format_version`.
 
 ## [Unreleased]
 
+### Fixed
+- BGZF input (BAM, bgzipped SAM) that ends without the end-of-file marker is now an input error (exit 2), and `filter` leaves no output file. Before, a file cut at a block boundary was read silently: on a samtools-written BAM cut that way, 1,261 of 1,500 reads were scored with exit 0. samtools only warns in this case. CRAM input cut before its end-of-file container was already an error.
+
 ## [0.2.0] - 2026-11-16
 
 Reference-based scoring (`-r`) and CRAM input: `pmdshodh filter -r ref.fa in.bam` replaces `samtools calmd | pmdtools | samtools view`.
