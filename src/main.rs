@@ -600,6 +600,9 @@ struct Batch {
 struct CramBatch {
     containers: Vec<noodles::cram::io::reader::Container>,
     repository: noodles::fasta::Repository,
+    /// `M5` checks of the reference sequences this batch loaded; all must pass before its records
+    /// are used.
+    checks: std::sync::Mutex<Vec<pmdshodh::reference::Md5Check>>,
     /// Records kept (fewer than decoded when `max_reads` ends in this batch).
     keep: usize,
     /// Records before this batch.
@@ -620,14 +623,20 @@ impl Batch {
         let Some(c) = self.cram.take() else {
             return Ok(());
         };
+        let error = |e: io::Error| {
+            Failure::Input(format!(
+                "CRAM records {} to {}: {e}",
+                c.first + 1,
+                c.first + c.keep as u64
+            ))
+        };
+        for check in c.checks.into_inner().unwrap() {
+            pmdshodh::bgzf::wait_for(&check)
+                .unwrap_or_else(|| Err(io::Error::other("M5 check stopped")))
+                .map_err(error)?;
+        }
         let decoded =
-            pmdshodh::cram::decode(&c.containers, &c.repository, header).map_err(|e| {
-                Failure::Input(format!(
-                    "CRAM records {} to {}: {e}",
-                    c.first + 1,
-                    c.first + c.keep as u64
-                ))
-            })?;
+            pmdshodh::cram::decode(&c.containers, &c.repository, header).map_err(error)?;
         self.bases = decoded.bases;
         self.windows = decoded.windows;
         self.windows.truncate(c.keep);
@@ -712,7 +721,7 @@ fn read_cram_batch(
         .iter()
         .filter_map(pmdshodh::cram::reference_sequence_id)
         .collect();
-    let repository = reference
+    let (repository, checks) = reference
         .as_mut()
         .expect("CRAM input is opened with -r")
         .cram_batch(header, &ids)
@@ -726,6 +735,7 @@ fn read_cram_batch(
         batch.cram = Some(CramBatch {
             containers,
             repository,
+            checks: checks.into(),
             keep: keep as usize,
             first: *n_read,
         });
