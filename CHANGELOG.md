@@ -7,7 +7,13 @@ Changes to the JSON run summary are listed with its `format_version`.
 ## [Unreleased]
 
 ### Changed
+- Read bases written as `=` (same as the reference, as `samtools calmd -e` writes them) are scored in default mode. With `-r` they take their reference base; without `-r` a read with `=` bases is an input error naming `-r`, because MD does not give their reference bases. PMDtools never counts `=` as C or G: a read with nine `=` at reference C scored 5.03 from 1 site instead of 4.22 from 10. `--pmdtools-compat` keeps that. Kept records are written with their `=` bases.
 - Damage tables (`--summary`, `damage`) count only positions within `--range` of the read ends instead of looking at every base. Output is identical. `score -@ 1 --summary` on 2 M BER11_L_NOuser reads: median 9.16 → 8.33 s (5 alternating runs each; WSL Ubuntu 24.04, i5-13500H).
+
+### Fixed
+- BGZF input (BAM, bgzipped SAM) that ends without the end-of-file marker is now an input error (exit 2), and `filter` leaves no output file. Before, a file cut at a block boundary was read silently: on a samtools-written BAM cut that way, 1,261 of 1,500 reads were scored with exit 0. samtools only warns in this case. CRAM input cut before its end-of-file container was already an error.
+- `score -o FILE` writes under a temporary name and renames on success, as `filter` does, so a failed run no longer leaves a partial table.
+- gzip-compressed input that is not BGZF (as `gzip` writes it) is reported as such, with a hint to recompress with bgzip, instead of "invalid BGZF header".
 
 ## [0.2.0] - 2026-11-16
 
