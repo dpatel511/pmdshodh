@@ -285,10 +285,16 @@ jobs:
     permissions:
       id-token: write
     steps:
+      # Only the wheels and the sdist: on a tag push the binary and smoke-test artifacts exist too.
       - uses: actions/download-artifact@v4
         with:
+          pattern: wheel-*
           path: dist
           merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdist
+          path: dist
       - name: Check versions match the tag
         run: |
           set -euo pipefail
