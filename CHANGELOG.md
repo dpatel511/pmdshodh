@@ -6,6 +6,9 @@ Changes to the JSON run summary are listed with its `format_version`.
 
 ## [Unreleased]
 
+### Changed
+- Damage tables (`--summary`, `damage`) count only positions within `--range` of the read ends instead of looking at every base. Output is identical. `score -@ 1 --summary` on 2 M BER11_L_NOuser reads: median 9.16 → 8.33 s (5 alternating runs each; WSL Ubuntu 24.04, i5-13500H).
+
 ## [0.2.0] - 2026-11-16
 
 Reference-based scoring (`-r`) and CRAM input: `pmdshodh filter -r ref.fa in.bam` replaces `samtools calmd | pmdtools | samtools view`.
