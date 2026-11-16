@@ -87,6 +87,8 @@ pub struct Reader<R> {
     block: Vec<u8>,
     pos: usize,
     done: bool,
+    /// The last frame read holds no data, as the end-of-file marker does (SAM spec §4.1.2).
+    last_empty: bool,
 }
 
 impl<R: Read> Reader<R> {
@@ -98,15 +100,27 @@ impl<R: Read> Reader<R> {
             block: Vec::new(),
             pos: 0,
             done: false,
+            last_empty: false,
         }
     }
 
     fn fill(&mut self) {
         while !self.done && self.pending.len() < depth(self.parallel) {
             match read_frame(&mut self.inner) {
-                Ok(Some(frame)) => self
-                    .pending
-                    .push_back(submit(self.parallel, move || inflate(&frame))),
+                Ok(Some(frame)) => {
+                    self.last_empty = frame[frame.len() - 4..] == [0; 4];
+                    self.pending
+                        .push_back(submit(self.parallel, move || inflate(&frame)));
+                }
+                // Input cut at a block boundary would otherwise end silently, losing the rest.
+                Ok(None) if !self.last_empty => {
+                    self.pending.push_back(submit(false, || {
+                        Err(invalid(
+                            "input ends without the BGZF end-of-file marker; it is probably truncated",
+                        ))
+                    }));
+                    self.done = true;
+                }
                 Ok(None) => self.done = true,
                 // Queued behind the blocks before it, so earlier data is read first.
                 Err(e) => {
@@ -346,5 +360,9 @@ mod tests {
         let mut bad = good.clone();
         bad[12] = b'X';
         assert_eq!(read(&bad).unwrap_err(), "invalid BGZF header");
+        // Whole blocks but no end-of-file marker: the data is read, then the end is an error.
+        let eof = "input ends without the BGZF end-of-file marker; it is probably truncated";
+        assert_eq!(read(&good[..good.len() - 28]).unwrap_err(), eof);
+        assert_eq!(read(&[]).unwrap_err(), eof);
     }
 }

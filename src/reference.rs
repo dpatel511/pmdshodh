@@ -273,7 +273,10 @@ impl Reference {
             .cram
             .as_mut()
             .expect("CRAM input is opened with enable_cram");
-        if ids.iter().any(|&id| c.last != Some(id))
+        // A batch with no single-reference container (multi-reference slices, as samtools writes
+        // for many small contigs, or unmapped reads) also clears it: those sequences are loaded
+        // while decoding, so otherwise the cache would grow to the whole reference.
+        if (ids.is_empty() || ids.iter().any(|&id| c.last != Some(id)))
             && c.loaded.load(Ordering::Relaxed) > CRAM_CACHED_BASES
         {
             c.repository.clear();
@@ -473,6 +476,26 @@ AC
         iw.write_index(&index).unwrap();
         noodles::bgzf::gzi::fs::write(dir.join("small.fa.gz.gzi"), &Default::default()).unwrap();
         assert_eq!(load(&gz, b"s1").0, b"ACGTNNACGTAC");
+    }
+
+    /// The CRAM cache is cleared past its limit also for a batch whose containers all have
+    /// several reference sequences (no single-reference IDs), so it cannot grow to the whole
+    /// reference.
+    #[test]
+    fn cram_cache_is_cleared_for_multi_reference_batches() {
+        let dir = std::env::temp_dir().join("pmdshodh_reference_cram_clear");
+        std::fs::create_dir_all(&dir).unwrap();
+        let (path, _) = fasta(&dir);
+        let mut r = Reference::open(&path).unwrap();
+        let header = noodles::sam::Header::default();
+        r.enable_cram(&path, &header).unwrap();
+        let c = r.cram.as_ref().unwrap();
+        c.repository.get(b"c2").unwrap().unwrap();
+        c.loaded.store(CRAM_CACHED_BASES + 1, Ordering::Relaxed);
+        r.cram_batch(&header, &[]).unwrap();
+        let c = r.cram.as_ref().unwrap();
+        assert_eq!(c.loaded.load(Ordering::Relaxed), 0);
+        assert!(c.repository.is_empty());
     }
 
     #[test]
