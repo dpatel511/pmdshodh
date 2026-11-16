@@ -60,17 +60,31 @@ struct Loader {
     /// The FASTA itself when it is not compressed: sequences are then read in one piece at their
     /// index offsets, which is several times faster than noodles' line-by-line reader.
     plain: Option<File>,
+    /// The header's `M5` checksums (lowercase hex) by sequence name. noodles checks a slice
+    /// against its reference only when the slice has one reference sequence; multi-reference
+    /// slices carry no checksum, so each whole sequence is checked here when it is loaded.
+    md5: HashMap<Vec<u8>, String>,
 }
 
 impl Loader {
-    fn open(path: &Path) -> io::Result<Self> {
+    fn open(path: &Path, header: &noodles::sam::Header) -> io::Result<Self> {
+        use noodles::sam::header::record::value::map::reference_sequence::tag::MD5_CHECKSUM;
         use std::io::Read;
         let mut plain = File::open(path)?;
         let mut magic = [0u8; 2];
         let compressed = plain.read(&mut magic)? == 2 && magic == [0x1f, 0x8b];
+        let md5 = header
+            .reference_sequences()
+            .iter()
+            .filter_map(|(name, seq)| {
+                let m5 = seq.other_fields().get(&MD5_CHECKSUM)?;
+                Some((name.to_vec(), m5.to_string().to_ascii_lowercase()))
+            })
+            .collect();
         Ok(Loader {
             reader: fasta::io::indexed_reader::Builder::default().build_from_path(path)?,
             plain: (!compressed).then_some(plain),
+            md5,
         })
     }
 
@@ -80,13 +94,31 @@ impl Loader {
             .iter()
             .find(|r| AsRef::<[u8]>::as_ref(r.name()) == name)
             .cloned();
-        match (&mut self.plain, record) {
+        let bases = match (&mut self.plain, record) {
             (Some(file), Some(record)) => read_plain(file, &record),
             _ => self
                 .reader
                 .query(&Region::new(name, ..))
                 .map(|record| record.sequence().as_ref().to_ascii_uppercase()),
+        }?;
+        if let Some(expected) = self.md5.get(name) {
+            use md5::Digest;
+            let actual: String = md5::Md5::digest(&bases)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            if actual != *expected {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "reference sequence {} does not match the CRAM header's M5 checksum \
+                         (is -r the reference the CRAM was written with?)",
+                        String::from_utf8_lossy(name)
+                    ),
+                ));
+            }
         }
+        Ok(bases)
     }
 }
 
@@ -182,12 +214,13 @@ impl Reference {
         })
     }
 
-    /// Prepare for decoding CRAM from this FASTA (opened again from `path`).
-    pub fn enable_cram(&mut self, path: &Path) -> io::Result<()> {
+    /// Prepare for decoding CRAM from this FASTA (opened again from `path`). Sequences are
+    /// checked against the `M5` checksums in the CRAM's `header` as they are loaded.
+    pub fn enable_cram(&mut self, path: &Path, header: &noodles::sam::Header) -> io::Result<()> {
         let loaded = Arc::new(AtomicUsize::new(0));
         let staged: Staged = Arc::default();
         let adapter = UppercaseAdapter {
-            loader: Loader::open(path)?,
+            loader: Loader::open(path, header)?,
             staged: Arc::clone(&staged),
             loaded: Arc::clone(&loaded),
         };
@@ -195,7 +228,7 @@ impl Reference {
             repository: fasta::Repository::new(adapter),
             loaded,
             last: None,
-            loader: Loader::open(path)?,
+            loader: Loader::open(path, header)?,
             staged,
             cached: HashSet::new(),
         });
@@ -366,7 +399,7 @@ mod tests {
         let (path, seq) = fasta(&dir);
         let load = |path: &Path, name: &[u8]| {
             let mut r = Reference::open(path).unwrap();
-            r.enable_cram(path).unwrap();
+            r.enable_cram(path, &Default::default()).unwrap();
             let c = r.cram.as_ref().unwrap();
             let s = c.repository.get(name).unwrap().unwrap();
             (
