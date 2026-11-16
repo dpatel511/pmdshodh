@@ -138,7 +138,72 @@ pub fn site_term_ss(is_match: bool, z: u32, y: u32, q: u8, params: &Params) -> f
 
 /// Single-stranded score term of one C site from paper SI Eq. S1 alone (the default `--ss`
 /// score), with the same null-model background damage as the double-stranded term.
+///
+/// The damage at each distance and the error and null terms at each quality are precomputed
+/// once for the run's parameters ([`S1Table`]); the result is bit-identical to computing them
+/// here.
 pub fn site_term_s1(is_match: bool, z: u32, y: u32, q: u8, params: &Params) -> f64 {
+    let in_range = |d: u32| (1..=S1Table::MAX_Z).contains(&d);
+    if in_range(z)
+        && in_range(y)
+        && q <= S1Table::MAX_Q
+        && let Some(t) = S1Table::for_params(params)
+    {
+        let (a, b, e) = (
+            t.damage[z as usize - 1],
+            t.damage[y as usize - 1],
+            t.error[usize::from(q)],
+        );
+        return log_ratio(
+            is_match,
+            p_match_two_ends(a, b, params.pi_ancient, e),
+            t.null[usize::from(q)],
+        );
+    }
+    site_term_s1_direct(is_match, z, y, q, params)
+}
+
+/// Inputs of the S1 term that depend on one distance or one quality, for one parameter set.
+struct S1Table {
+    params: Params,
+    /// `damage(z)` for z = 1..=MAX_Z.
+    damage: Vec<f64>,
+    /// `error_rate(q)` for q = 0..=MAX_Q.
+    error: Vec<f64>,
+    /// The null model's match probability at each quality.
+    null: Vec<f64>,
+}
+
+impl S1Table {
+    const MAX_Z: u32 = DsTable::MAX_Z;
+    const MAX_Q: u8 = DsTable::MAX_Q;
+
+    fn new(params: Params) -> Self {
+        let error: Vec<f64> = (0..=Self::MAX_Q).map(error_rate).collect();
+        S1Table {
+            params,
+            damage: (1..=Self::MAX_Z)
+                .map(|z| damage(z, params.p, params.c))
+                .collect(),
+            null: error
+                .iter()
+                .map(|&e| {
+                    p_match_two_ends(NULL_BACKGROUND, NULL_BACKGROUND, params.pi_contamination, e)
+                })
+                .collect(),
+            error,
+        }
+    }
+
+    /// The table for `params`, built on first use (as [`DsTable::for_params`]).
+    fn for_params(params: &Params) -> Option<&'static S1Table> {
+        static TABLE: std::sync::OnceLock<S1Table> = std::sync::OnceLock::new();
+        let table = TABLE.get_or_init(|| S1Table::new(*params));
+        (table.params == *params).then_some(table)
+    }
+}
+
+fn site_term_s1_direct(is_match: bool, z: u32, y: u32, q: u8, params: &Params) -> f64 {
     let e = error_rate(q);
     log_ratio(
         is_match,
@@ -224,6 +289,52 @@ mod tests {
         assert_eq!(
             site_term_ds(true, 5, 255, &other).to_bits(),
             site_term_ds_direct(true, 5, 255, &other).to_bits()
+        );
+    }
+
+    #[test]
+    fn s1_table_is_bit_identical_to_direct_computation() {
+        let other = Params {
+            p: 0.5,
+            c: 0.02,
+            pi_ancient: 0.002,
+            pi_contamination: 0.003,
+        };
+        let distances = [1, 2, 3, 7, 30, 100, 255, 256];
+        for params in [Params::default(), other] {
+            let table = S1Table::new(params);
+            for is_match in [false, true] {
+                for z in 1..=S1Table::MAX_Z {
+                    for y in distances {
+                        for q in 0..=S1Table::MAX_Q {
+                            let (a, b, e) = (
+                                table.damage[z as usize - 1],
+                                table.damage[y as usize - 1],
+                                table.error[usize::from(q)],
+                            );
+                            let cached = log_ratio(
+                                is_match,
+                                p_match_two_ends(a, b, params.pi_ancient, e),
+                                table.null[usize::from(q)],
+                            );
+                            assert_eq!(
+                                cached.to_bits(),
+                                site_term_s1_direct(is_match, z, y, q, &params).to_bits()
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        // Outside the table, and for a second parameter set, terms are computed directly.
+        let p = Params::default();
+        assert_eq!(
+            site_term_s1(false, 300, 5, 40, &p).to_bits(),
+            site_term_s1_direct(false, 300, 5, 40, &p).to_bits()
+        );
+        assert_eq!(
+            site_term_s1(true, 5, 6, 200, &other).to_bits(),
+            site_term_s1_direct(true, 5, 6, 200, &other).to_bits()
         );
     }
 
