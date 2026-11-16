@@ -194,6 +194,7 @@ pmdshodh corrects these PMDtools behaviours by default. Use `--pmdtools-compat` 
 | `--upperthreshold` keeps reads with no informative sites (score 0) | Reads with no C/G evidence at all are output as "non-damaged" | Not kept by `--upper-threshold` (still counted as `no_informative_sites`) |
 | Lowercase reference bases in MD (outside the SAM spec) are never counted as C or G | 339 of 14.0 M reads scored differently on a public horse BAM (ENA ERR1892229) | Read as uppercase |
 | On reverse-strand reads, MD characters other than `ACGTNRY`/`acgt` (e.g. lowercase `n`) are dropped when the reference is reverse-complemented | The reference shifts against the read; scores up to 15.7 too high | No shift |
+| Read bases written as `=` (same as the reference; `samtools calmd -e`) never count as C or G | Matches at those sites are missed: a read with nine `=` at reference C scored 5.03 from 1 site instead of 4.22 from 10 | Taken from `-r`; without `-r`, an input error (MD does not give their reference bases) |
 
 **In CpG modes, expect pmdshodh's default results to differ from PMDtools on some reads.**
 

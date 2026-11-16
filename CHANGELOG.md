@@ -6,6 +6,9 @@ Changes to the JSON run summary are listed with its `format_version`.
 
 ## [Unreleased]
 
+### Changed
+- Read bases written as `=` (same as the reference, as `samtools calmd -e` writes them) are scored in default mode. With `-r` they take their reference base; without `-r` a read with `=` bases is an input error naming `-r`, because MD does not give their reference bases. PMDtools never counts `=` as C or G: a read with nine `=` at reference C scored 5.03 from 1 site instead of 4.22 from 10. `--pmdtools-compat` keeps that. Kept records are written with their `=` bases.
+
 ## [0.2.0] - 2026-11-16
 
 Reference-based scoring (`-r`) and CRAM input: `pmdshodh filter -r ref.fa in.bam` replaces `samtools calmd | pmdtools | samtools view`.
