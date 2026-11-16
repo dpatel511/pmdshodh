@@ -21,6 +21,8 @@ pub struct RunInfo<'a> {
     pub subcommand: &'a str,
     pub command: String,
     pub input: String,
+    /// "sam", "bam" or "cram", detected from the contents.
+    pub input_format: &'a str,
     pub settings: Settings,
     pub filters: ReadFilters,
     pub threshold: Option<f64>,
@@ -167,6 +169,7 @@ impl Summary {
             "subcommand": info.subcommand,
             "command": info.command,
             "input": info.input,
+            "input_format": info.input_format,
             "reference": {
                 "path": info.reference,
                 "bases_from": if info.reference.is_some() { "reference" } else { "md" },
