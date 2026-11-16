@@ -72,7 +72,10 @@ impl DamageCounts {
             let b = seq[at(j)].to_ascii_uppercase();
             if reverse { complement(b) } else { b }
         };
-        for i in 0..n {
+        // Only positions within `range` of either end are counted, so skip the middle of the read.
+        let head = self.range.min(n);
+        let tail = n.saturating_sub(self.range).max(head);
+        for i in (0..head).chain(tail..n) {
             let (Some(r), Some(b)) = (mref(i), base_index(mbase(i))) else {
                 continue;
             };
@@ -140,6 +143,73 @@ impl DamageCounts {
                         *u += v;
                     }
                 }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Params;
+    use crate::sites::Library;
+
+    /// Counting only the ends gives the same table as counting every position: a position's
+    /// counts do not depend on `range`, so a range longer than every read (nothing skipped) must
+    /// agree with a short one on the short one's positions. Reads shorter than, equal to and
+    /// longer than twice the range; both strands; every treatment; with and without compat.
+    #[test]
+    fn counting_only_the_ends_matches_counting_every_position() {
+        let mut x: u64 = 0x9E3779B97F4A7C15;
+        let mut rand = |n: u64| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x % n
+        };
+        let range = 10;
+        for treatment in [Treatment::None, Treatment::Half, Treatment::Full] {
+            for pmdtools_compat in [false, true] {
+                let s = Settings {
+                    library: Library::DoubleStranded,
+                    treatment,
+                    params: Params::default(),
+                    min_baseq: 20,
+                    pmdtools_compat,
+                };
+                let (mut short, mut full) = (DamageCounts::new(range), DamageCounts::new(1000));
+                for n in [1, 5, 9, 10, 11, 19, 20, 21, 35, 150] {
+                    for reverse in [false, true] {
+                        let refs: Vec<Option<u8>> = (0..n)
+                            .map(|_| (rand(8) != 0).then(|| b"ACGT"[rand(4) as usize]))
+                            .collect();
+                        let seq: Vec<u8> = refs
+                            .iter()
+                            .map(|r| match (r, rand(4)) {
+                                (Some(b'C'), 0) => b'T',
+                                (Some(b'G'), 0) => b'A',
+                                (Some(b), _) => *b,
+                                (None, _) => b"ACGTN"[rand(5) as usize],
+                            })
+                            .collect();
+                        let qual: Vec<u8> = (0..n).map(|_| rand(41) as u8).collect();
+                        short.add_read(&seq, &qual, &refs, reverse, &s);
+                        full.add_read(&seq, &qual, &refs, reverse, &s);
+                    }
+                }
+                for (a, b) in [
+                    (&short.five_prime, &full.five_prime),
+                    (&short.three_prime, &full.three_prime),
+                ] {
+                    for k in 0..2 {
+                        assert_eq!(
+                            a[k][..],
+                            b[k][..range],
+                            "{treatment:?} compat={pmdtools_compat}"
+                        );
+                    }
+                }
+                assert!(short.five_prime[0].iter().flatten().sum::<u64>() > 0);
             }
         }
     }

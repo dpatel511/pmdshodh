@@ -247,6 +247,26 @@ fn process_fields(
             (refs, MdCheck::NotChecked)
         }
     };
+    // `=` read bases mean "same as the reference" (`samtools calmd -e` writes them). They are
+    // resolved from `-r` for scoring; from MD alone their reference base is unknown. PMDtools
+    // never counts them as C or G, and `--pmdtools-compat` keeps that. Kept records are written
+    // unchanged.
+    let seq = if settings.pmdtools_compat || !seq.contains(&b'=') {
+        seq
+    } else if reference.is_some() {
+        seq.iter()
+            .zip(&refs)
+            .map(|(&b, r)| match (b, r) {
+                (b'=', Some(r)) => *r,
+                _ => b,
+            })
+            .collect()
+    } else {
+        return Err(
+            "read has '=' bases, whose reference bases MD does not give (pass the reference with -r)"
+                .into(),
+        );
+    };
     if let Some(d) = damage {
         d.add_read(&seq, &qual, &refs, reverse, settings);
     }
