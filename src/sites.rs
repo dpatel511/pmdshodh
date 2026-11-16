@@ -476,24 +476,19 @@ pub fn score_read(
         }
         Library::SingleStranded => {
             // Scored in molecule orientation: reverse-strand reads are reverse-complemented.
-            let (mrefs, mseq, mqual): (Vec<Option<u8>>, Vec<u8>, Vec<u8>) = if reverse {
-                (
-                    refs.iter().rev().map(|r| r.map(complement)).collect(),
-                    seq.iter()
-                        .rev()
-                        .map(|b| complement(b.to_ascii_uppercase()))
-                        .collect(),
-                    qual.iter().rev().copied().collect(),
-                )
-            } else {
-                (
-                    refs.to_vec(),
-                    seq.iter().map(u8::to_ascii_uppercase).collect(),
-                    qual.to_vec(),
-                )
+            // Molecule position i is SAM position at(i), complemented for reverse reads.
+            let at = |i: usize| if reverse { n - 1 - i } else { i };
+            let mref = |i: usize| {
+                let r = refs[at(i)];
+                if reverse { r.map(complement) } else { r }
             };
             for i in 0..n {
-                let (Some(r), b, q) = (mrefs[i], mseq[i], mqual[i]) else {
+                let b = seq[at(i)].to_ascii_uppercase();
+                let (Some(r), b, q) = (
+                    mref(i),
+                    if reverse { complement(b) } else { b },
+                    qual[at(i)],
+                ) else {
                     continue;
                 };
                 if q < s.min_baseq || r != b'C' || !(b == b'C' || b == b'T') {
@@ -502,8 +497,8 @@ pub fn score_read(
                 let keep = match s.treatment {
                     Treatment::None => true,
                     // Only the molecule's 5′ first base is exempt (docs/blackbox.md 1.6b).
-                    Treatment::Half => i == 0 || g_follows(&mrefs, i, false),
-                    Treatment::Full => g_follows(&mrefs, i, false),
+                    Treatment::Half => i == 0 || (i + 1 < n && mref(i + 1) == Some(b'G')),
+                    Treatment::Full => i + 1 < n && mref(i + 1) == Some(b'G'),
                 };
                 if keep {
                     let (z, y) = ((i + 1) as u32, (n - i) as u32);
