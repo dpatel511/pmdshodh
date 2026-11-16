@@ -428,10 +428,15 @@ fn open_alignments(
     let mut reference = open_reference(reference_path)?;
     let cannot_read = |e: io::Error| Failure::Input(format!("cannot read {}: {e}", path.display()));
     let mut input = io::BufReader::new(open_input(&path.to_path_buf())?);
-    let bgzf = input
-        .fill_buf()
-        .map_err(cannot_read)?
-        .starts_with(&[0x1f, 0x8b]);
+    let head = input.fill_buf().map_err(cannot_read)?;
+    let bgzf = head.starts_with(&[0x1f, 0x8b]);
+    // BGZF sets FEXTRA (for its block size); plain gzip, as `gzip` writes it, does not.
+    if bgzf && head.get(3).is_some_and(|flags| flags & 0x04 == 0) {
+        return Err(Failure::Input(format!(
+            "{} is gzip-compressed but not BGZF: recompress it with bgzip",
+            path.display()
+        )));
+    }
     let mut source: Box<dyn BufRead + Send> = if bgzf {
         Box::new(io::BufReader::new(pmdshodh::bgzf::Reader::new(
             input,
@@ -595,6 +600,9 @@ struct Batch {
 struct CramBatch {
     containers: Vec<noodles::cram::io::reader::Container>,
     repository: noodles::fasta::Repository,
+    /// `M5` checks of the reference sequences this batch loaded; all must pass before its records
+    /// are used.
+    checks: std::sync::Mutex<Vec<pmdshodh::reference::Md5Check>>,
     /// Records kept (fewer than decoded when `max_reads` ends in this batch).
     keep: usize,
     /// Records before this batch.
@@ -615,14 +623,20 @@ impl Batch {
         let Some(c) = self.cram.take() else {
             return Ok(());
         };
+        let error = |e: io::Error| {
+            Failure::Input(format!(
+                "CRAM records {} to {}: {e}",
+                c.first + 1,
+                c.first + c.keep as u64
+            ))
+        };
+        for check in c.checks.into_inner().unwrap() {
+            pmdshodh::bgzf::wait_for(&check)
+                .unwrap_or_else(|| Err(io::Error::other("M5 check stopped")))
+                .map_err(error)?;
+        }
         let decoded =
-            pmdshodh::cram::decode(&c.containers, &c.repository, header).map_err(|e| {
-                Failure::Input(format!(
-                    "CRAM records {} to {}: {e}",
-                    c.first + 1,
-                    c.first + c.keep as u64
-                ))
-            })?;
+            pmdshodh::cram::decode(&c.containers, &c.repository, header).map_err(error)?;
         self.bases = decoded.bases;
         self.windows = decoded.windows;
         self.windows.truncate(c.keep);
@@ -707,7 +721,7 @@ fn read_cram_batch(
         .iter()
         .filter_map(pmdshodh::cram::reference_sequence_id)
         .collect();
-    let repository = reference
+    let (repository, checks) = reference
         .as_mut()
         .expect("CRAM input is opened with -r")
         .cram_batch(header, &ids)
@@ -721,6 +735,7 @@ fn read_cram_batch(
         batch.cram = Some(CramBatch {
             containers,
             repository,
+            checks: checks.into(),
             keep: keep as usize,
             first: *n_read,
         });
@@ -989,12 +1004,13 @@ fn run_score(args: &ScoreArgs) -> Result<(), Failure> {
     init_threads(args.model.threads)?;
     let (mut reader, header, mut reference, input_format) =
         open_alignments(&args.input, &args.model)?;
-    let out: Box<dyn Write + Send> = match &args.output {
-        Some(path) if path.as_os_str() != "-" => Box::new(
-            File::create(path)
-                .map_err(|e| Failure::Runtime(format!("cannot create {}: {e}", path.display())))?,
-        ),
-        _ => Box::new(io::stdout()),
+    // A file appears under its name only if the run succeeds, as for filter.
+    let (atomic, out): (Option<AtomicOutput>, Box<dyn Write + Send>) = match &args.output {
+        Some(path) if path.as_os_str() != "-" => {
+            let (a, f) = AtomicOutput::create(path)?;
+            (Some(a), Box::new(f))
+        }
+        _ => (None, Box::new(io::stdout())),
     };
     let mut out = BufWriter::new(out);
     let write_err = |e: io::Error| Failure::Runtime(format!("cannot write output: {e}"));
@@ -1021,6 +1037,9 @@ fn run_score(args: &ScoreArgs) -> Result<(), Failure> {
         },
     )?;
     out.flush().map_err(write_err)?;
+    if let Some(a) = atomic {
+        a.commit()?;
+    }
     let fin = Finish {
         subcommand: "score",
         input: &args.input,
