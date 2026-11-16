@@ -6,6 +6,9 @@ Changes to the JSON run summary are listed with its `format_version`.
 
 ## [Unreleased]
 
+### Changed
+- CRAM input: reference sequences are checked against the header `M5` on the thread pool instead of the reading thread. `score -@ 8 -r` on BER11_L_NOuser.cram: median 45.9 → 38.8 s (5 alternating runs each; WSL Ubuntu 24.04, i5-13500H). A wrong reference is still an input error before any record of the batch is used.
+
 ## [0.2.0] - 2026-11-16
 
 Reference-based scoring (`-r`) and CRAM input: `pmdshodh filter -r ref.fa in.bam` replaces `samtools calmd | pmdtools | samtools view`.
