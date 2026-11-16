@@ -66,7 +66,7 @@ Examples:
 
 #[derive(Args)]
 struct DamageArgs {
-    /// Input SAM or BAM file ("-" for stdin).
+    /// Input SAM, BAM or CRAM file ("-" for stdin; CRAM needs -r).
     input: PathBuf,
     /// Output JSON file (default: stdout).
     #[arg(help_heading = "Output", short, long)]
@@ -87,7 +87,7 @@ struct DamageArgs {
 #[derive(Args)]
 #[command(group(ArgGroup::new("bounds").args(["threshold", "upper_threshold"]).required(true).multiple(true)))]
 struct FilterArgs {
-    /// Input SAM or BAM file ("-" for stdin).
+    /// Input SAM, BAM or CRAM file ("-" for stdin; CRAM needs -r).
     input: PathBuf,
     /// Output file; format from the extension (.bam or .sam). "-" writes BAM to stdout.
     #[arg(help_heading = "Output", short, long)]
@@ -152,7 +152,7 @@ enum TagName {
 
 #[derive(Args)]
 struct ScoreArgs {
-    /// Input SAM or BAM file ("-" for stdin).
+    /// Input SAM, BAM or CRAM file ("-" for stdin; CRAM needs -r).
     input: PathBuf,
     /// Output TSV file (default: stdout; "-" also writes to stdout).
     #[arg(help_heading = "Output", short, long)]
@@ -278,6 +278,7 @@ struct ModelArgs {
     threads: usize,
     /// Reference FASTA, indexed with samtools faidx (bgzip also needs its .gzi). Reference bases
     /// come from it instead of MD tags, so reads need no MD tag; MD tags are checked against it.
+    /// Required for CRAM input.
     #[arg(help_heading = "Input", short = 'r', long)]
     reference: Option<PathBuf>,
 }
@@ -383,36 +384,100 @@ struct SummaryArgs {
     range: usize,
 }
 
-type InputReader = alignment::io::Reader<Box<dyn Read + Send>>;
+/// SAM and BAM go through noodles' reader; CRAM is decoded container by container on the pool.
+enum InputReader {
+    Alignment(alignment::io::Reader<Box<dyn Read + Send>>),
+    Cram(pmdshodh::cram::Reader),
+}
 type AlignmentRecord = alignment::Record;
 
-fn open_reader(
+/// Input format, detected from the file contents.
+#[derive(Clone, Copy)]
+enum InputFormat {
+    Sam,
+    Bam,
+    Cram,
+}
+
+impl InputFormat {
+    fn name(self) -> &'static str {
+        match self {
+            InputFormat::Sam => "sam",
+            InputFormat::Bam => "bam",
+            InputFormat::Cram => "cram",
+        }
+    }
+}
+
+/// Open `-r` (if given) and the input, and check the input header against the reference before
+/// any record is read. CRAM is decoded with `-r` only (docs/design.md section 11).
+fn open_alignments(
     path: &Path,
-    threads: usize,
-) -> Result<(InputReader, noodles::sam::Header), Failure> {
+    model: &ModelArgs,
+) -> Result<
+    (
+        InputReader,
+        noodles::sam::Header,
+        Option<Reference>,
+        InputFormat,
+    ),
+    Failure,
+> {
     use std::io::BufRead;
+    let reference_path = model.reference.as_deref();
+    let mut reference = open_reference(reference_path)?;
     let cannot_read = |e: io::Error| Failure::Input(format!("cannot read {}: {e}", path.display()));
     let mut input = io::BufReader::new(open_input(&path.to_path_buf())?);
     let bgzf = input
         .fill_buf()
         .map_err(cannot_read)?
         .starts_with(&[0x1f, 0x8b]);
-    let builder = alignment::io::reader::Builder::default();
-    let source: Box<dyn Read + Send> = if bgzf {
-        Box::new(pmdshodh::bgzf::Reader::new(input, threads > 1))
+    let mut source: Box<dyn BufRead + Send> = if bgzf {
+        Box::new(io::BufReader::new(pmdshodh::bgzf::Reader::new(
+            input,
+            model.threads > 1,
+        )))
     } else {
         Box::new(input)
     };
-    let builder = if bgzf {
-        builder.set_compression_method(None)
+    let magic = source.fill_buf().map_err(cannot_read)?;
+    let format = if magic.starts_with(b"CRAM") {
+        InputFormat::Cram
+    } else if magic.starts_with(b"BAM\x01") {
+        InputFormat::Bam
     } else {
-        builder
+        InputFormat::Sam
     };
-    let mut reader = builder.build_from_reader(source).map_err(cannot_read)?;
-    let header = reader
-        .read_header()
-        .map_err(|e| Failure::Input(format!("invalid header: {e}")))?;
-    Ok((reader, header))
+    let source: Box<dyn Read + Send> = Box::new(source);
+    let invalid_header = |e: io::Error| Failure::Input(format!("invalid header: {e}"));
+    let (reader, header) = if let InputFormat::Cram = format {
+        let (Some(r), Some(p)) = (reference.as_mut(), reference_path) else {
+            return Err(Failure::Input(format!(
+                "{} is CRAM, which needs its reference: pass it with -r FILE",
+                path.display()
+            )));
+        };
+        r.enable_cram(p).map_err(|e| reference_error(p, e))?;
+        let mut reader = pmdshodh::cram::Reader::new(source);
+        let header = reader.read_header().map_err(invalid_header)?;
+        (InputReader::Cram(reader), header)
+    } else {
+        use noodles_util::alignment::io::Format;
+        let mut reader = alignment::io::reader::Builder::default()
+            .set_compression_method(None)
+            .set_format(match format {
+                InputFormat::Bam => Format::Bam,
+                _ => Format::Sam,
+            })
+            .build_from_reader(source)
+            .map_err(cannot_read)?;
+        let header = reader.read_header().map_err(invalid_header)?;
+        (InputReader::Alignment(reader), header)
+    };
+    if let (Some(r), Some(p)) = (reference.as_ref(), reference_path) {
+        check_reference(r, p, &header)?;
+    }
+    Ok((reader, header, reference, format))
 }
 
 /// Read every record (or the first `max_reads`), count it in `summary`, and pass scored reads to
@@ -446,10 +511,11 @@ fn scan(
     if threads == 1 {
         let mut n_read = 0u64;
         loop {
-            let batch = read_batch(reader, header, reference, max_reads, &mut n_read)?;
+            let mut batch = read_batch(reader, header, reference, max_reads, &mut n_read)?;
             if batch.is_empty() {
                 return Ok(());
             }
+            batch.decode(header)?;
             let parts = score_batch(&batch, settings, filters, range);
             let first = n_read - batch.len() as u64;
             consume_batch(&batch.records, &parts, first, summary, &mut on_scored)?;
@@ -459,16 +525,18 @@ fn scan(
     // The serial loop runs on a pool thread, so the pool's `threads` threads are all there is;
     // the calling thread just waits.
     rayon::scope(|s| {
-        let spawn = |batch: Batch| {
+        let spawn = |mut batch: Batch| {
             let (tx, rx) = std::sync::mpsc::sync_channel(1);
             s.spawn(move |_| {
-                let parts = score_batch(&batch, settings, filters, range);
+                let parts = batch
+                    .decode(header)
+                    .map(|()| score_batch(&batch, settings, filters, range));
                 let _ = tx.send((batch, parts));
             });
             rx
         };
         // A task that panicked drops its sender; the scope then re-raises that panic.
-        let join = |rx: std::sync::mpsc::Receiver<(Batch, Scored)>| {
+        let join = |rx: std::sync::mpsc::Receiver<(Batch, Result<Scored, Failure>)>| {
             pmdshodh::bgzf::wait_for(&rx).expect("scoring task panicked")
         };
         let mut n_read = 0u64;
@@ -476,7 +544,7 @@ fn scan(
         let mut in_flight = std::collections::VecDeque::new();
         let mut consume_oldest = |in_flight: &mut std::collections::VecDeque<_>| {
             let (batch, parts) = join(in_flight.pop_front().unwrap());
-            consume_batch(&batch.records, &parts, first, summary, &mut on_scored)?;
+            consume_batch(&batch.records, &parts?, first, summary, &mut on_scored)?;
             first += batch.len() as u64;
             Ok::<(), Failure>(())
         };
@@ -517,15 +585,53 @@ struct Batch {
     /// All windows back to back; `windows[i]` is record `i`'s range in it.
     bases: Vec<u8>,
     windows: Vec<Option<std::ops::Range<usize>>>,
+    /// CRAM containers still to decode into `records`, `bases` and `windows`.
+    cram: Option<CramBatch>,
+}
+
+/// CRAM containers read on the serial thread and decoded with the batch's scoring, on the pool,
+/// so the serial thread can load the next batch's reference sequences meanwhile.
+struct CramBatch {
+    containers: Vec<noodles::cram::io::reader::Container>,
+    repository: noodles::fasta::Repository,
+    /// Records kept (fewer than decoded when `max_reads` ends in this batch).
+    keep: usize,
+    /// Records before this batch.
+    first: u64,
 }
 
 impl Batch {
     fn len(&self) -> usize {
-        self.records.len()
+        self.records.len() + self.cram.as_ref().map_or(0, |c| c.keep)
     }
 
     fn is_empty(&self) -> bool {
-        self.records.is_empty()
+        self.len() == 0
+    }
+
+    /// Decode CRAM containers, if any (on the pool).
+    fn decode(&mut self, header: &noodles::sam::Header) -> Result<(), Failure> {
+        let Some(c) = self.cram.take() else {
+            return Ok(());
+        };
+        let decoded =
+            pmdshodh::cram::decode(&c.containers, &c.repository, header).map_err(|e| {
+                Failure::Input(format!(
+                    "CRAM records {} to {}: {e}",
+                    c.first + 1,
+                    c.first + c.keep as u64
+                ))
+            })?;
+        self.bases = decoded.bases;
+        self.windows = decoded.windows;
+        self.windows.truncate(c.keep);
+        self.records = decoded
+            .records
+            .into_iter()
+            .take(c.keep)
+            .map(AlignmentRecord::Cram)
+            .collect();
+        Ok(())
     }
 
     fn window(&self, i: usize) -> Option<&[u8]> {
@@ -533,8 +639,9 @@ impl Batch {
     }
 }
 
-/// Read up to [`BATCH`] records; an empty batch means the end of the input (or of `max_reads`).
-/// With a reference, fetch each mapped record's window here, on the serial thread.
+/// Read up to [`BATCH`] records (CRAM: one container per pool thread); an empty batch means the
+/// end of the input (or of `max_reads`). With a reference, fetch each mapped record's window
+/// here, on the serial thread (CRAM: on the pool, while decoding).
 fn read_batch(
     reader: &mut InputReader,
     header: &noodles::sam::Header,
@@ -542,10 +649,17 @@ fn read_batch(
     max_reads: Option<u64>,
     n_read: &mut u64,
 ) -> Result<Batch, Failure> {
+    let reader = match reader {
+        InputReader::Alignment(reader) => reader,
+        InputReader::Cram(reader) => {
+            return read_cram_batch(reader, header, reference, max_reads, n_read);
+        }
+    };
     let mut batch = Batch {
         records: Vec::with_capacity(BATCH),
         bases: Vec::new(),
         windows: Vec::new(),
+        cram: None,
     };
     while batch.len() < BATCH && max_reads.is_none_or(|m| *n_read < m) {
         let mut record = AlignmentRecord::default();
@@ -562,6 +676,54 @@ fn read_batch(
             batch.windows.push(window);
         }
         batch.records.push(record);
+    }
+    Ok(batch)
+}
+
+/// Read one CRAM container per pool thread and load their reference sequences; they are decoded
+/// on the pool (`Batch::decode`). Records are counted from the container headers.
+fn read_cram_batch(
+    reader: &mut pmdshodh::cram::Reader,
+    header: &noodles::sam::Header,
+    reference: &mut Option<Reference>,
+    max_reads: Option<u64>,
+    n_read: &mut u64,
+) -> Result<Batch, Failure> {
+    let error = |e: io::Error| Failure::Input(format!("CRAM records after record {n_read}: {e}"));
+    let mut batch = Batch {
+        records: Vec::new(),
+        bases: Vec::new(),
+        windows: Vec::new(),
+        cram: None,
+    };
+    if max_reads.is_some_and(|m| *n_read >= m) {
+        return Ok(batch);
+    }
+    let containers = reader
+        .read_containers(rayon::current_num_threads())
+        .map_err(error)?;
+    let ids: Vec<usize> = containers
+        .iter()
+        .filter_map(pmdshodh::cram::reference_sequence_id)
+        .collect();
+    let repository = reference
+        .as_mut()
+        .expect("CRAM input is opened with -r")
+        .cram_batch(header, &ids)
+        .map_err(error)?;
+    let records: u64 = containers
+        .iter()
+        .map(|c| c.header().record_count() as u64)
+        .sum();
+    let keep = max_reads.map_or(records, |m| records.min(m - *n_read));
+    if keep > 0 {
+        batch.cram = Some(CramBatch {
+            containers,
+            repository,
+            keep: keep as usize,
+            first: *n_read,
+        });
+        *n_read += keep;
     }
     Ok(batch)
 }
@@ -597,12 +759,8 @@ fn fetch_window(
     Ok(Some(from..bases.len()))
 }
 
-/// Open `-r` and check that every header sequence is in it with the same length, before any
-/// record is read (docs/design.md section 11).
-fn open_reference(
-    path: Option<&Path>,
-    header: &noodles::sam::Header,
-) -> Result<Option<Reference>, Failure> {
+/// Open `-r`; a missing file or index is an input error.
+fn open_reference(path: Option<&Path>) -> Result<Option<Reference>, Failure> {
     let Some(path) = path else {
         return Ok(None);
     };
@@ -612,13 +770,26 @@ fn open_reference(
             path.display()
         )));
     }
-    let reference = Reference::open(path).map_err(|e| {
-        Failure::Input(format!(
-            "cannot read reference {} or its index: {e} (index it with samtools faidx {})",
-            path.display(),
-            path.display()
-        ))
-    })?;
+    Reference::open(path)
+        .map(Some)
+        .map_err(|e| reference_error(path, e))
+}
+
+fn reference_error(path: &Path, e: io::Error) -> Failure {
+    Failure::Input(format!(
+        "cannot read reference {} or its index: {e} (index it with samtools faidx {})",
+        path.display(),
+        path.display()
+    ))
+}
+
+/// Check that every header sequence is in the reference with the same length (docs/design.md
+/// section 11).
+fn check_reference(
+    reference: &Reference,
+    path: &Path,
+    header: &noodles::sam::Header,
+) -> Result<(), Failure> {
     let mut differ = Vec::new();
     for (name, seq) in header.reference_sequences() {
         let name = name.to_string();
@@ -639,7 +810,7 @@ fn open_reference(
             header.reference_sequences().len()
         )));
     }
-    Ok(Some(reference))
+    Ok(())
 }
 
 fn score_batch(
@@ -759,6 +930,7 @@ fn write_json(path: Option<&PathBuf>, value: &serde_json::Value) -> Result<(), F
 struct Finish<'a> {
     subcommand: &'a str,
     input: &'a Path,
+    input_format: InputFormat,
     settings: Settings,
     filters: ReadFilters,
     threshold: Option<f64>,
@@ -772,6 +944,7 @@ impl Finish<'_> {
             subcommand: self.subcommand,
             command: command_line(),
             input: self.input.display().to_string(),
+            input_format: self.input_format.name(),
             settings: self.settings,
             filters: self.filters,
             threshold: self.threshold,
@@ -813,8 +986,8 @@ fn run_score(args: &ScoreArgs) -> Result<(), Failure> {
     let (settings, filters) = args.model.settings().map_err(Failure::Input)?;
     check_range(args.summary.range)?;
     init_threads(args.model.threads)?;
-    let (mut reader, header) = open_reader(&args.input, args.model.threads)?;
-    let mut reference = open_reference(args.model.reference.as_deref(), &header)?;
+    let (mut reader, header, mut reference, input_format) =
+        open_alignments(&args.input, &args.model)?;
     let out: Box<dyn Write + Send> = match &args.output {
         Some(path) if path.as_os_str() != "-" => Box::new(
             File::create(path)
@@ -850,6 +1023,7 @@ fn run_score(args: &ScoreArgs) -> Result<(), Failure> {
     let fin = Finish {
         subcommand: "score",
         input: &args.input,
+        input_format,
         settings,
         filters,
         threshold: None,
@@ -868,8 +1042,8 @@ fn run_damage(args: &DamageArgs) -> Result<(), Failure> {
     let (settings, filters) = args.model.settings().map_err(Failure::Input)?;
     check_range(args.range)?;
     init_threads(args.model.threads)?;
-    let (mut reader, header) = open_reader(&args.input, args.model.threads)?;
-    let mut reference = open_reference(args.model.reference.as_deref(), &header)?;
+    let (mut reader, header, mut reference, input_format) =
+        open_alignments(&args.input, &args.model)?;
     let mut summary = Summary::new(args.range);
     scan(
         &mut reader,
@@ -886,6 +1060,7 @@ fn run_damage(args: &DamageArgs) -> Result<(), Failure> {
     let fin = Finish {
         subcommand: "damage",
         input: &args.input,
+        input_format,
         settings,
         filters,
         threshold: None,
@@ -986,8 +1161,8 @@ fn run_filter(args: &FilterArgs) -> Result<(), Failure> {
         }
     };
 
-    let (mut reader, in_header) = open_reader(&args.input, args.model.threads)?;
-    let mut reference = open_reference(args.model.reference.as_deref(), &in_header)?;
+    let (mut reader, in_header, mut reference, input_format) =
+        open_alignments(&args.input, &args.model)?;
 
     let mut out_header = in_header.clone();
     let program = Map::<sam::header::record::value::map::Program>::builder()
@@ -1059,6 +1234,7 @@ fn run_filter(args: &FilterArgs) -> Result<(), Failure> {
     let fin = Finish {
         subcommand: "filter",
         input: &args.input,
+        input_format,
         settings,
         filters,
         threshold: args.threshold,

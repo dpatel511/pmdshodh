@@ -1127,3 +1127,168 @@ fn reference_scores_equal_md_scores_and_bad_references_are_rejected() {
         assert!(!out.exists());
     }
 }
+
+/// Write `sam` as CRAM, encoded against an uppercase copy of `fasta` (the CRAM checksums do not
+/// depend on case).
+fn write_cram(dir: &Path, fasta: &Path, sam: &Path) -> PathBuf {
+    use noodles::fasta;
+    use noodles::sam::alignment::io::Write as _;
+    let upper = dir.join("upper.fa");
+    fs::write(&upper, fs::read(fasta).unwrap().to_ascii_uppercase()).unwrap();
+    let mut fai = fasta.as_os_str().to_owned();
+    fai.push(".fai");
+    fs::copy(&fai, dir.join("upper.fa.fai")).unwrap();
+    let reader = fasta::io::indexed_reader::Builder::default()
+        .build_from_path(&upper)
+        .unwrap();
+    let repository =
+        fasta::Repository::new(fasta::repository::adapters::IndexedReader::new(reader));
+    let (header, records) = read_records(sam);
+    let path = dir.join("reads.cram");
+    let mut w = noodles::cram::io::writer::Builder::default()
+        .set_reference_sequence_repository(repository)
+        .build_from_path(&path)
+        .unwrap();
+    w.write_header(&header).unwrap();
+    for r in &records {
+        w.write_alignment_record(&header, r).unwrap();
+    }
+    w.try_finish(&header).unwrap();
+    path
+}
+
+/// CRAM input, decoded with -r against a soft-masked reference, gives the same scores and the same
+/// kept records as the SAM it was written from, for 1 and 2 threads. CRAM without -r, or with a
+/// reference that differs under the reads (slice MD5), is an input error, and the summary records
+/// the input format.
+#[test]
+fn cram_input_matches_its_sam_and_needs_the_reference() {
+    let dir = tmp_dir("cram_input");
+    let (fasta, sam) = reference_and_reads(&dir);
+    let cram = write_cram(&dir, &fasta, &sam);
+    let (fasta, sam, cram) = (
+        fasta.to_str().unwrap(),
+        sam.to_str().unwrap(),
+        cram.to_str().unwrap(),
+    );
+    let ok = |args: &[&str]| {
+        let o = run(args);
+        assert!(
+            o.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        o.stdout
+    };
+    for compat in [&[][..], &["--pmdtools-compat"][..]] {
+        let from_sam = ok(&[&["score", "--quiet", "-r", fasta], compat, &[sam]].concat());
+        for threads in ["1", "2"] {
+            let from_cram = ok(&[
+                &["score", "--quiet", "-r", fasta, "-@", threads],
+                compat,
+                &[cram],
+            ]
+            .concat());
+            assert!(
+                from_cram == from_sam,
+                "{compat:?} -@ {threads}: CRAM scores differ from SAM"
+            );
+        }
+    }
+    // Kept records are the SAM records (sequences uppercase although the reference is soft-masked).
+    let records = |input: &str| {
+        let out = ok(&[
+            "filter",
+            "--quiet",
+            "-r",
+            fasta,
+            "-t",
+            "1",
+            "--output-format",
+            "sam",
+            input,
+            "-o",
+            "-",
+        ]);
+        let text = String::from_utf8(out).unwrap();
+        text.lines()
+            .filter(|l| !l.starts_with('@'))
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    };
+    let kept = records(sam);
+    assert!(!kept.is_empty() && kept.len() < 400, "{} kept", kept.len());
+    assert_eq!(records(cram), kept);
+
+    // CRAMs written by samtools 1.25 (htslib 1.25) from these same reads.sam and ref.fa, in a
+    // directory holding just those files:
+    //   samtools view --no-PG -C --output-fmt-option version=3.0 -T ref.fa -o reads_htslib_3.0.cram reads.sam
+    // and likewise for 3.1. htslib does not store an MD tag it can regenerate from the reference,
+    // and pmdshodh does not regenerate it, so kept records are the SAM records without MD.
+    let without_md: Vec<String> = kept
+        .iter()
+        .map(|l| {
+            l.split('\t')
+                .filter(|f| !f.starts_with("MD:Z:"))
+                .collect::<Vec<_>>()
+                .join("\t")
+        })
+        .collect();
+    for version in ["3.0", "3.1"] {
+        let htslib = data(&format!("reads_htslib_{version}.cram"));
+        let htslib = htslib.to_str().unwrap();
+        for compat in [&[][..], &["--pmdtools-compat"][..]] {
+            let from_sam = ok(&[&["score", "--quiet", "-r", fasta], compat, &[sam]].concat());
+            let from_htslib = ok(&[&["score", "--quiet", "-r", fasta], compat, &[htslib]].concat());
+            assert!(
+                from_htslib == from_sam,
+                "CRAM {version} {compat:?}: scores differ from SAM"
+            );
+        }
+        assert_eq!(records(htslib), without_md, "CRAM {version}");
+    }
+
+    let o = run(&["score", "--quiet", cram]);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("needs its reference"));
+    assert!(o.stdout.is_empty());
+
+    // A reference with the same names and lengths but one base changed under the reads.
+    let wrong = dir.join("wrong.fa");
+    let mut text = fs::read(fasta).unwrap();
+    let at = ">chrT\n".len() + 500;
+    text[at] = if text[at] == b'A' { b'C' } else { b'A' };
+    fs::write(&wrong, text).unwrap();
+    fs::copy(format!("{fasta}.fai"), dir.join("wrong.fa.fai")).unwrap();
+    let o = run(&["score", "--quiet", "-r", wrong.to_str().unwrap(), cram]);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("checksum mismatch"));
+
+    // --max-reads stops at the same read in CRAM (counted from container headers) as in SAM.
+    let mut summaries = Vec::new();
+    for (input, format) in [(cram, "cram"), (sam, "sam")] {
+        let js = dir.join(format!("{format}.json"));
+        ok(&[
+            "damage",
+            "--quiet",
+            "-r",
+            fasta,
+            "--max-reads",
+            "150",
+            "-@",
+            "2",
+            input,
+            "-o",
+            js.to_str().unwrap(),
+        ]);
+        let j: serde_json::Value = serde_json::from_str(&fs::read_to_string(&js).unwrap()).unwrap();
+        assert_eq!(j["input_format"], format);
+        assert_eq!(j["reads"]["input"], 150);
+        summaries.push((
+            j["reads"].clone(),
+            j["damage"].clone(),
+            j["score_histogram"].clone(),
+        ));
+    }
+    assert_eq!(summaries[0], summaries[1]);
+}
