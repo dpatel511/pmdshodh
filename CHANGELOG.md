@@ -6,19 +6,25 @@ Changes to the JSON run summary are listed with its `format_version`.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-16
+
+Reference-based scoring (`-r`) and CRAM input: `pmdshodh filter -r ref.fa in.bam` replaces `samtools calmd | pmdtools | samtools view`.
+
 ### Added
 - `-r, --reference FILE`: take reference bases from an indexed FASTA (`samtools faidx`; bgzip with `.gzi` too) instead of MD tags, so reads need no MD tag. MD tags that are present are compared with the reference; disagreeing (usually stale) tags are reported on stderr and counted in the summary, and those reads are scored from the reference. Every header sequence must be in the index with the same length; this is checked before any record is read. With `--pmdtools-compat`, the reference bases go through an MD tag written the way `samtools calmd` writes it (reference bases in uppercase, soft-masked ones included), so scores match PMDtools run on calmd output.
+- CRAM input for `filter`, `score` and `damage`, detected from the file contents and decoded with `-r` (required). Each reference sequence is checked against the header's `M5` checksum when it is loaded (and single-reference slices against their own MD5), so a different reference is an input error. Containers are decoded on the thread pool; output is identical for any thread count. `filter` still writes SAM or BAM.
+  - Kept records are written as stored in the CRAM: MD and NM tags that htslib left out (it regenerates them on decoding) are not added back.
+  - CRAM decoding loads whole reference sequences: with `score -@ 8 -r`, peak RSS was 1,181 MB on BER11_L_NOuser.cram and 1,247 MB on Motala3.cram, against 110 MB and 105 MB for the same BAMs (median of 3 runs; MB = 1024 KiB, as in docs/benchmarks.md). The `M5` check added about 19% to CRAM wall time (median of 3: 35.6 → 42.3 s and 54.5 → 64.7 s at `-@ 8`).
+- PyPI packaging: wheels that carry the `pmdshodh` binary (Linux x86_64 and aarch64 with glibc 2.17 or newer, macOS arm64 and x86_64, Windows x86_64), built and published by a workflow with PyPI trusted publishing. 0.1.0 was published to PyPI on 2026-11-15 from the `v0.1.0` tag.
 - Real-data checks of `-r`: samtools calmd and PMDtools 0.60 under WSL Ubuntu 24.04, every read compared.
   - BER11_L_NOuser (14,006,183 reads, soft-masked equCab2) and Motala3 (23,622,338 reads, human_g1k_v37): `-r` on the original BAM against the MD path on calmd output gives 0 reads differing in score or site count in default mode on both. In `--pmdtools-compat`, Motala3 also has 0 differing reads.
   - PMDtools on calmd output against `--pmdtools-compat -r`: Motala3 has 0 reads above 1e-6 (largest difference 4.97e-14). BER11 has 339 above 1e-6. All 339 have an MD tag in the input BAM with lowercase reference bases; calmd left those tags as they were, and PMDtools never counts a lowercase base as C or G. With MD removed from those reads (483 have lowercase MD) and recomputed by calmd, PMDtools and `--pmdtools-compat -r` agree on all 483 (largest difference 2.29e-14).
   - Motala3 has 107 reads whose MD tag disagrees with the reference.
-- CRAM input for `filter`, `score` and `damage`, detected from the file contents and decoded with `-r` (required). Each reference sequence is checked against the header's `M5` checksum when it is loaded (and single-reference slices against their own MD5), so a different reference is an input error. Multi-reference slices carry no MD5 of their own; before the `M5` check, a wrong reference decoded them silently into wrong read bases. Containers are decoded on the thread pool; output is identical for any thread count. `filter` still writes SAM or BAM.
-  - Kept records are written as stored in the CRAM: MD and NM tags that htslib left out (it regenerates them on decoding) are not added back.
-  - CRAM decoding loads whole reference sequences: with `score -@ 8 -r`, peak RSS was 1,181 MB on BER11_L_NOuser.cram and 1,247 MB on Motala3.cram, against 110 MB and 105 MB for the same BAMs (median of 3 runs; MB = 1024 KiB, as in docs/benchmarks.md). The `M5` check added about 19% to CRAM wall time (median of 3: 35.6 → 42.3 s and 54.5 → 64.7 s at `-@ 8`).
 - Real-data check of CRAM: samtools 1.25 CRAMs of BER11_L_NOuser and Motala3 give byte-identical `score -r` output to their BAMs (14,006,183 and 23,622,338 reads; default and `--pmdtools-compat` at `-@ 8`, default at `-@ 1`). `filter -r -t 3` keeps 1,029,380 and 301,706 reads, identical in every field and tag to `samtools view --input-fmt-option decode_md=0` of the same CRAMs. Unit tests decode CRAM 3.0 and 3.1 files written by samtools, including one with a multi-reference slice, a proper pair and an unmapped read, and an empty CRAM.
-- JSON summary `format_version` 2 also records `input_format` (`sam`, `bam` or `cram`). For CRAM, the `reference.md_tags` counts cover only MD tags stored in the file. Version 2 has not been released, so this needs no further bump.
-- JSON summary `format_version` 2: a `reference` section with the `-r` path, whether reference bases came from MD tags or the FASTA, and (with `-r`) how many scored reads had MD tags that agree, disagree or are absent.
-- PyPI packaging: wheels that carry the `pmdshodh` binary (Linux x86_64 and aarch64 with glibc 2.17 or newer, macOS arm64 and x86_64, Windows x86_64), built and published by a workflow with PyPI trusted publishing. Version 0.1.0 was published to PyPI on 2026-11-15, built from the `v0.1.0` tag.
+
+### Changed
+- JSON run summary `format_version` 2 (was 1). New fields: `input_format` (`sam`, `bam` or `cram`), and a `reference` section with the `-r` path, whether reference bases came from MD tags or the FASTA, and (with `-r`) how many scored reads had MD tags that agree, disagree or are absent. For CRAM, the MD tag counts cover only MD tags stored in the file. Fields from version 1 are unchanged.
+- The error for a mapped read without an MD tag now suggests `-r` as well as `samtools calmd`.
 
 ## [0.1.0] - 2026-11-14
 
@@ -66,5 +72,6 @@ First release.
 - `score -o -` writes to stdout; it used to create a file named `-`.
 - `--pmdtools-compat` now also reproduces PMDtools 0.60 for lowercase reference bases in MD (never counted as C or G) and for reverse-strand reads whose MD contains characters PMDtools drops when reverse-complementing (e.g. lowercase `n`). Default scoring is unchanged; both are listed as departures in docs/design.md.
 
-[Unreleased]: https://github.com/dpatel511/pmdshodh/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/dpatel511/pmdshodh/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/dpatel511/pmdshodh/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/dpatel511/pmdshodh/releases/tag/v0.1.0

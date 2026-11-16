@@ -1,6 +1,6 @@
 [package]
 name = "pmdshodh"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 # noodles 0.119 needs 1.91; the CI msrv job builds and tests with exactly this version.
 rust-version = "1.91"
