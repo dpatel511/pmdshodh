@@ -944,7 +944,14 @@ fn reference_and_reads(dir: &Path) -> (PathBuf, PathBuf) {
     };
     let refseq: Vec<u8> = (0..2000).map(|_| b"ACGT"[rand(4) as usize]).collect();
     let fasta = dir.join("ref.fa");
-    fs::write(&fasta, [b">chrT\n".as_slice(), &refseq, b"\n"].concat()).unwrap();
+    // The second half is soft-masked (lowercase); the MD tags below are uppercase, as calmd
+    // writes them.
+    let masked: Vec<u8> = refseq
+        .iter()
+        .enumerate()
+        .map(|(i, b)| if i < 1000 { *b } else { b.to_ascii_lowercase() })
+        .collect();
+    fs::write(&fasta, [b">chrT\n".as_slice(), &masked, b"\n"].concat()).unwrap();
     fs::write(dir.join("ref.fa.fai"), "chrT\t2000\t6\t2000\t2001\n").unwrap();
 
     let mut sam = String::from("@HD\tVN:1.6\n@SQ\tSN:chrT\tLN:2000\n");

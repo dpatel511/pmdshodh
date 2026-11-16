@@ -165,7 +165,8 @@ pub fn reference_along_read_from_fasta(
 }
 
 /// The MD tag `samtools calmd` would write for this read: matching runs as numbers, mismatched
-/// and deleted reference bases as stored in the FASTA (case kept), a `0` between adjacent
+/// and deleted reference bases uppercased (calmd writes soft-masked bases in uppercase too, so
+/// PMDtools counts them as C or G when it reads its output), a `0` between adjacent
 /// letters and after a deletion that a mismatch follows. Read and reference bases match when
 /// equal ignoring case, or when the read has `=`.
 pub fn md_from_reference(seq: &[u8], cigar: &[CigarOp], window: &[u8]) -> Vec<u8> {
@@ -185,7 +186,7 @@ pub fn md_from_reference(seq: &[u8], cigar: &[CigarOp], window: &[u8]) -> Vec<u8
                         run += 1;
                     } else {
                         flush(&mut md, &mut run);
-                        md.push(refb);
+                        md.push(refb.to_ascii_uppercase());
                     }
                     s += 1;
                     r += 1;
@@ -195,7 +196,7 @@ pub fn md_from_reference(seq: &[u8], cigar: &[CigarOp], window: &[u8]) -> Vec<u8
             CigarOp::Deletion(n) => {
                 flush(&mut md, &mut run);
                 md.push(b'^');
-                md.extend_from_slice(&window[r..r + n]);
+                md.extend(window[r..r + n].iter().map(u8::to_ascii_uppercase));
                 r += n;
             }
             CigarOp::HardClip(_) | CigarOp::Unsupported => {}
@@ -773,17 +774,20 @@ mod tests {
             ("ACGTACGT", &[Match(8)], "ACGTACGT", "8"),
             ("ACGTACGT", &[Match(8)], "TCGTACGA", "0T6A0"),
             ("ACGTACGT", &[Match(8)], "acgtaCgt", "8"),
+            // Soft-masked mismatches are written in uppercase, as calmd writes them; otherwise
+            // --pmdtools-compat would not count the C->T below as a C site.
+            ("TCGTACGT", &[Match(8)], "ccgtacgt", "0C7"),
             (
                 "ACGTACGT",
                 &[Match(4), Deletion(2), Match(4)],
                 "ACGTggACGA",
-                "4^gg3A0",
+                "4^GG3A0",
             ),
             (
                 "ACGTACGT",
                 &[Match(4), Deletion(1), Match(4)],
                 "ACGTcTCGT",
-                "4^c0T3",
+                "4^C0T3",
             ),
             (
                 "ACGTACGT",
