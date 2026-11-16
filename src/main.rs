@@ -457,9 +457,10 @@ fn open_alignments(
                 path.display()
             )));
         };
-        r.enable_cram(p).map_err(|e| reference_error(p, e))?;
         let mut reader = pmdshodh::cram::Reader::new(source);
         let header = reader.read_header().map_err(invalid_header)?;
+        r.enable_cram(p, &header)
+            .map_err(|e| reference_error(p, e))?;
         (InputReader::Cram(reader), header)
     } else {
         use noodles_util::alignment::io::Format;

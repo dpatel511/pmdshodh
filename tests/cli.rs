@@ -1262,7 +1262,8 @@ fn cram_input_matches_its_sam_and_needs_the_reference() {
     fs::copy(format!("{fasta}.fai"), dir.join("wrong.fa.fai")).unwrap();
     let o = run(&["score", "--quiet", "-r", wrong.to_str().unwrap(), cram]);
     assert_eq!(o.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&o.stderr).contains("checksum mismatch"));
+    // Caught by the header M5 check before noodles' slice MD5 check.
+    assert!(String::from_utf8_lossy(&o.stderr).contains("M5 checksum"));
 
     // --max-reads stops at the same read in CRAM (counted from container headers) as in SAM.
     let mut summaries = Vec::new();
@@ -1291,4 +1292,110 @@ fn cram_input_matches_its_sam_and_needs_the_reference() {
         ));
     }
     assert_eq!(summaries[0], summaries[1]);
+}
+
+/// A samtools CRAM with one multi-reference slice (two contigs), a proper pair, both strands and
+/// an unmapped read. Files: tests/data/pairs.{fa,fa.fai,sam,cram}; the SAM is synthetic (no MD
+/// tags), and the CRAM was written by samtools 1.25 in a directory holding just those files:
+///   samtools view --no-PG -C --output-fmt-option version=3.1 \
+///     --output-fmt-option multi_seq_per_slice=1 -T pairs.fa -o pairs.cram pairs.sam
+/// htslib decodes it back to pairs.sam (`--input-fmt-option decode_md=0`). pairs_empty.cram is
+/// the same command on the SAM's header lines only.
+///
+/// Scores and kept records (mate fields included) equal those from the SAM. Multi-reference
+/// slices carry no reference MD5, so a reference with one base changed under a read was decoded
+/// silently (wrong read bases and scores, exit 0); it must be rejected via the header's M5.
+#[test]
+fn cram_multi_reference_slice_pairs_and_wrong_reference() {
+    let dir = tmp_dir("cram_pairs");
+    let (fasta, sam, cram) = (data("pairs.fa"), data("pairs.sam"), data("pairs.cram"));
+    let (fasta, sam, cram) = (
+        fasta.to_str().unwrap(),
+        sam.to_str().unwrap(),
+        cram.to_str().unwrap(),
+    );
+    let ok = |args: &[&str]| {
+        let o = run(args);
+        assert!(
+            o.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        o.stdout
+    };
+    for threads in ["1", "2"] {
+        let score = |input: &str| ok(&["score", "--quiet", "-@", threads, "-r", fasta, input]);
+        let from_cram = score(cram);
+        assert_eq!(from_cram, score(sam), "-@ {threads}");
+        // Five mapped reads scored; the unmapped one is skipped.
+        assert_eq!(String::from_utf8(from_cram).unwrap().lines().count(), 6);
+        let kept = |input: &str| {
+            let out = ok(&[
+                "filter",
+                "--quiet",
+                "-@",
+                threads,
+                "-r",
+                fasta,
+                "-t",
+                "-1000",
+                input,
+                "-o",
+                "-",
+                "--output-format",
+                "sam",
+            ]);
+            String::from_utf8(out)
+                .unwrap()
+                .lines()
+                .filter(|l| !l.starts_with('@'))
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        };
+        let from_cram = kept(cram);
+        assert_eq!(from_cram.len(), 5);
+        assert_eq!(from_cram, kept(sam), "-@ {threads}");
+    }
+
+    // One base changed on c2, inside read s1 (c2:11-50).
+    let wrong = dir.join("wrong.fa");
+    let mut text = fs::read(fasta).unwrap();
+    let at = text.windows(4).position(|w| w == b">c2\n").unwrap() + 4 + 20;
+    text[at] = if text[at] == b'A' { b'C' } else { b'A' };
+    fs::write(&wrong, text).unwrap();
+    fs::copy(format!("{fasta}.fai"), dir.join("wrong.fa.fai")).unwrap();
+    let out = dir.join("wrong.bam");
+    let o = run(&[
+        "filter",
+        "-t",
+        "3",
+        "--quiet",
+        "-r",
+        wrong.to_str().unwrap(),
+        cram,
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("M5 checksum"));
+    assert!(!out.exists());
+
+    // An empty CRAM (header only; same samtools command from the SAM header) gives a valid,
+    // empty BAM and exit 0.
+    let empty = data("pairs_empty.cram");
+    let out = dir.join("empty.bam");
+    ok(&[
+        "filter",
+        "--quiet",
+        "-r",
+        fasta,
+        "-t",
+        "3",
+        empty.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    let (header, records) = read_records(&out);
+    assert_eq!(header.reference_sequences().len(), 2);
+    assert!(records.is_empty());
 }

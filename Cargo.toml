@@ -15,6 +15,8 @@ include = ["src/**/*.rs", "tests/*.rs", "tests/data/*", "tests/oracle/*.py", "Ca
 
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"] }
+# MD5 of whole reference sequences for CRAM input (src/reference.rs); the version noodles-cram uses.
+md-5 = "0.11.0"
 noodles = { version = "=0.119.0", features = ["core", "sam", "bam", "cram", "bgzf", "fasta"] }
 noodles-util = { version = "=0.88.0", features = ["alignment"] }
 rayon = "1.12.0"
