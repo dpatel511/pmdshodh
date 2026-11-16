@@ -4,7 +4,7 @@
 
 pmdshodh scores every read in a SAM, BAM or CRAM file for ancient DNA damage, keeps or removes reads by score, and summarises damage patterns. It uses the scoring model of [PMDtools](https://github.com/pontussk/PMDtools) 0.60, fixes PMDtools' known errors by default (`--pmdtools-compat` reproduces PMDtools exactly), reads and writes alignments directly, and runs on multiple threads.
 
-> **Status:** alpha (v0.1.0). Scores have been validated against PMDtools on real and synthetic data. Performance benchmarks are in [docs/benchmarks.md](docs/benchmarks.md); a Bioconda package is still to come.
+> **Status:** alpha (v0.1.0). `-r/--reference` and CRAM input are on `main` and not yet in a release or on PyPI. Scores have been validated against PMDtools on real and synthetic data. Performance benchmarks are in [docs/benchmarks.md](docs/benchmarks.md); a Bioconda package is still to come.
 
 ## Contents
 
@@ -52,7 +52,7 @@ cargo build --release
 
 **Input requirement:** pmdshodh needs each read's reference bases. Either pass the reference with `-r`, or give it reads with an **MD tag**.
 - **With `-r ref.fa`:** the FASTA must be indexed with `samtools faidx`. Reference bases come from the FASTA, so reads need no MD tag. Any MD tags present are checked against the reference, and stale ones are counted.
-- **CRAM input** always needs `-r`, with the reference the CRAM was written against. Each slice's MD5 checksum is checked against it, so a different reference is an input error rather than silently wrong scores. `REF_PATH`, `REF_CACHE` and downloads are not used.
+- **CRAM input** always needs `-r`, with the reference the CRAM was written against. Each reference sequence is checked against the `M5` checksum in the CRAM header when it is loaded, so a different reference is an input error rather than silently wrong reads and scores. (samtools writes `M5`; without it, only single-reference slices are checked, against their own MD5.) `REF_PATH`, `REF_CACHE` and downloads are not used.
 - **Without `-r`:** every mapped read needs an MD tag. If your aligner doesn't write one, add it with `samtools calmd -b input.bam reference.fa > input.md.bam`.
 
 ## Quick start
@@ -222,7 +222,8 @@ The complete list, with reasoning: [docs/design.md](docs/design.md) §5.
 
 - CRAM is input only; `filter` writes SAM or BAM.
 - From CRAM input, kept records have no MD or NM tag unless the CRAM stored one. htslib usually leaves these tags out and regenerates them on decoding; pmdshodh does not. Run `samtools calmd` on the output if a later step needs MD.
-- CRAM input loads whole reference sequences, because noodles decodes against them. Peak memory at `-@ 8` was 1.24 GB (horse) and 1.50 GB (human) in one run each, against 10–41 MB for BAM input ([docs/design.md](docs/design.md) §11).
+- CRAM input must be scored against the reference it was written with, so a masked FASTA (as nf-core/eager uses to mask positions) fails the checksum check. Mask BAM input instead, or decode the CRAM to BAM first.
+- CRAM input loads whole reference sequences, because noodles decodes against them. Peak memory with `score -@ 8 -r` was 1,181 MB (horse) and 1,247 MB (human) for CRAM, against 110 MB and 105 MB for the same reads as BAM (median of 3 runs). Checking the reference checksums added about 19% to CRAM run time ([docs/design.md](docs/design.md) §11).
 - Scores can differ in the last digits between operating systems, because each platform's math library rounds `ln` and `powf` differently. On the test fixture, Windows differed from Linux and macOS by at most 1.8e-15. Only a score this close to a threshold could be filtered differently.
 - Benchmarks cover one laptop and two double-stranded libraries: [docs/benchmarks.md](docs/benchmarks.md). In that round, metaDMG `pmd` scored reads 8–15% faster than `pmdshodh score` on one thread. Since then, `score` skips damage counting without `--summary`; on 2 M reads it took 6.18 s against metaDMG's 8.23 s (CHANGELOG.md).
 - No real single-stranded library has been tested; single-stranded parity rests on synthetic reads.
