@@ -1437,3 +1437,123 @@ fn score_output_is_atomic_and_plain_gzip_is_named() {
     assert_eq!(o.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&o.stderr).contains("not BGZF: recompress it with bgzip"));
 }
+
+/// `=` read bases (same as the reference; `samtools calmd -e` writes them). PMDtools 0.60 never
+/// counts them as C, so a read whose matching Cs are `=` scored 5.0297 from 1 site, not 4.2201
+/// from 10 like the same read spelled out (both PMDtools values, measured 2026-11-16). Default
+/// mode now resolves them from -r and rejects them without -r (MD does not give their reference
+/// bases); --pmdtools-compat keeps PMDtools' value. Kept records still carry the `=` bases.
+#[test]
+fn equals_read_bases_are_resolved_from_the_reference() {
+    let dir = tmp_dir("equals_bases");
+    let fasta = dir.join("ref.fa");
+    fs::write(&fasta, ">c\nCCCCCCCCCCAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n").unwrap();
+    fs::write(dir.join("ref.fa.fai"), "c\t40\t3\t40\t41\n").unwrap();
+    let sam = |name: &str, seq: &str| {
+        let path = dir.join(name);
+        fs::write(
+            &path,
+            format!(
+                "@SQ\tSN:c\tLN:40\nr\t0\tc\t1\t60\t10M\t*\t0\t0\t{seq}\tIIIIIIIIII\tMD:Z:0C9\n"
+            ),
+        )
+        .unwrap();
+        path
+    };
+    let (eq, spelled) = (
+        sam("eq.sam", "T========="),
+        sam("spelled.sam", "TCCCCCCCCC"),
+    );
+    let (eq, spelled, fasta) = (
+        eq.to_str().unwrap(),
+        spelled.to_str().unwrap(),
+        fasta.to_str().unwrap(),
+    );
+    let score = |args: &[&str]| -> (f64, u32) {
+        let o = run(&[&["score", "--quiet"], args].concat());
+        assert!(
+            o.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        let text = String::from_utf8(o.stdout).unwrap();
+        let f: Vec<&str> = text.lines().nth(1).unwrap().split('\t').collect();
+        (f[2].parse().unwrap(), f[3].parse().unwrap())
+    };
+    let close = |a: f64, b: f64| (a - b).abs() < 1e-12;
+    let (s, n) = score(&["-r", fasta, eq]);
+    assert!(close(s, 4.2200864108613265) && n == 10, "{s} {n}");
+    assert_eq!(score(&["-r", fasta, eq]), score(&[spelled]));
+    for args in [
+        &["--pmdtools-compat", eq][..],
+        &["--pmdtools-compat", "-r", fasta, eq][..],
+    ] {
+        let (s, n) = score(args);
+        assert!(close(s, 5.029717285061266) && n == 1, "{args:?}: {s} {n}");
+    }
+    let o = run(&["score", "--quiet", eq]);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("pass the reference with -r"));
+
+    let o = run(&[
+        "filter",
+        "--quiet",
+        "-r",
+        fasta,
+        "-t",
+        "3",
+        eq,
+        "-o",
+        "-",
+        "--output-format",
+        "sam",
+    ]);
+    assert!(o.status.success());
+    let text = String::from_utf8(o.stdout).unwrap();
+    assert!(
+        text.lines()
+            .any(|l| l.starts_with("r\t") && l.contains("\tT=========\t"))
+    );
+}
+
+/// A BAM whose blocks are whole but whose BGZF end-of-file marker is missing (e.g. a copy cut at
+/// a block boundary) used to be read silently, losing the reads after the cut. It is now an input
+/// error, and filter leaves no output file.
+#[test]
+fn bam_without_eof_marker_is_an_error() {
+    let dir = tmp_dir("bam_no_eof");
+    let bam = dir.join("all.bam");
+    let o = run(&[
+        "filter",
+        "--quiet",
+        "-t",
+        "-1000",
+        data("reads_random.sam").to_str().unwrap(),
+        "-o",
+        bam.to_str().unwrap(),
+    ]);
+    assert!(o.status.success());
+    let bytes = fs::read(&bam).unwrap();
+    let cut = dir.join("cut.bam");
+    fs::write(&cut, &bytes[..bytes.len() - 28]).unwrap();
+    let out = dir.join("out.bam");
+    for args in [
+        &["score", "--quiet", cut.to_str().unwrap(), "-o", "-"][..],
+        &[
+            "filter",
+            "-t",
+            "3",
+            cut.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+        ][..],
+    ] {
+        let o = run(args);
+        assert_eq!(o.status.code(), Some(2), "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&o.stderr).contains("without the BGZF end-of-file marker"),
+            "{args:?}"
+        );
+    }
+    assert!(!out.exists());
+}
