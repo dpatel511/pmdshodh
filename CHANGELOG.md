@@ -6,6 +6,9 @@ Changes to the JSON run summary are listed with its `format_version`.
 
 ## [Unreleased]
 
+### Fixed
+- CRAM input: the cache of whole reference sequences is also cleared past its limit (256 Mi bases) when a batch has only multi-reference containers, as samtools writes for many small contigs. Before, such input kept every sequence it had used, up to the whole reference.
+
 ## [0.2.0] - 2026-11-16
 
 Reference-based scoring (`-r`) and CRAM input: `pmdshodh filter -r ref.fa in.bam` replaces `samtools calmd | pmdtools | samtools view`.
