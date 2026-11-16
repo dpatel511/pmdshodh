@@ -362,7 +362,9 @@ fn damage_table_matches_pmdtools_deamination() {
 #[test]
 fn summary_json_counts_and_versions() {
     let j = damage_json(&[]);
-    assert_eq!(j["format_version"], 1);
+    assert_eq!(j["format_version"], 2);
+    assert_eq!(j["reference"]["bases_from"], "md");
+    assert!(j["reference"]["md_tags"].is_null());
     assert_eq!(j["reads"]["input"], 1500);
     assert_eq!(j["reads"]["scored"], 1500);
     assert!(j["reads"]["kept"].is_null());
@@ -927,4 +929,194 @@ fn help_examples_run() {
         }
     }
     assert_eq!(ran, 6, "two runnable examples per command");
+}
+
+/// A synthetic reference (one 2,000-base contig, indexed) and SAM reads aligned to it with damage-like
+/// C->T changes near the 5' end, mismatches, deletions, insertions and soft clips. MD tags are
+/// written from the reference as samtools calmd writes them. Returns (fasta, sam).
+fn reference_and_reads(dir: &Path) -> (PathBuf, PathBuf) {
+    let mut x: u64 = 0x2545F4914F6CDD1D;
+    let mut rand = |n: u64| {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x % n
+    };
+    let refseq: Vec<u8> = (0..2000).map(|_| b"ACGT"[rand(4) as usize]).collect();
+    let fasta = dir.join("ref.fa");
+    fs::write(&fasta, [b">chrT\n".as_slice(), &refseq, b"\n"].concat()).unwrap();
+    fs::write(dir.join("ref.fa.fai"), "chrT\t2000\t6\t2000\t2001\n").unwrap();
+
+    let mut sam = String::from("@HD\tVN:1.6\n@SQ\tSN:chrT\tLN:2000\n");
+    for i in 0..400 {
+        let pos = rand(1900) as usize;
+        let shape = rand(4);
+        // (CIGAR, read length, reference span)
+        let (cigar, ops): (&str, &[(u8, usize)]) = match shape {
+            0 => ("40M", &[(b'M', 40)]),
+            1 => ("20M2D20M", &[(b'M', 20), (b'D', 2), (b'M', 20)]),
+            2 => ("3S37M", &[(b'S', 3), (b'M', 37)]),
+            _ => ("15M1I24M", &[(b'M', 15), (b'I', 1), (b'M', 24)]),
+        };
+        // MD as the SAM spec and samtools calmd write it: the match count before every mismatch
+        // and every deletion (0 if none), the reference base(s), and the final count.
+        let (mut seq, mut md, mut run, mut r) = (Vec::new(), String::new(), 0, pos);
+        for &(op, n) in ops {
+            match op {
+                b'M' => {
+                    for _ in 0..n {
+                        let refb = refseq[r];
+                        let mut b = refb;
+                        if refb == b'C' && seq.len() < 3 && rand(2) == 0 {
+                            b = b'T';
+                        } else if rand(25) == 0 {
+                            b = b"ACGT"[rand(4) as usize];
+                        }
+                        if b == refb {
+                            run += 1;
+                        } else {
+                            md += &format!("{run}{}", refb as char);
+                            run = 0;
+                        }
+                        seq.push(b);
+                        r += 1;
+                    }
+                }
+                b'D' => {
+                    md += &format!("{run}^{}", String::from_utf8_lossy(&refseq[r..r + n]));
+                    run = 0;
+                    r += n;
+                }
+                _ => seq.extend((0..n).map(|_| b"ACGT"[rand(4) as usize])),
+            }
+        }
+        md += &run.to_string();
+        let flag = if i % 2 == 0 { 0 } else { 16 };
+        let qual = "I".repeat(seq.len());
+        sam += &format!(
+            "r{i}\t{flag}\tchrT\t{}\t60\t{cigar}\t*\t0\t0\t{}\t{qual}\tMD:Z:{md}\n",
+            pos + 1,
+            String::from_utf8(seq).unwrap()
+        );
+    }
+    let path = dir.join("reads.sam");
+    fs::write(&path, sam).unwrap();
+    (fasta, path)
+}
+
+/// `-r` gives the same scores as correct MD tags (default and --pmdtools-compat, 1 and 2
+/// threads), scores reads without MD, counts stale MD tags, and rejects a bad reference before
+/// reading any record.
+#[test]
+fn reference_scores_equal_md_scores_and_bad_references_are_rejected() {
+    let dir = tmp_dir("reference_r");
+    let (fasta, sam) = reference_and_reads(&dir);
+    let (fasta, sam_s) = (fasta.to_str().unwrap(), sam.to_str().unwrap());
+    let score = |extra: &[&str], input: &str| {
+        let mut args = vec!["score", "--quiet"];
+        args.extend_from_slice(extra);
+        args.push(input);
+        let o = run(&args);
+        assert!(
+            o.status.success(),
+            "{extra:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        o.stdout
+    };
+    for compat in [&[][..], &["--pmdtools-compat"][..]] {
+        let from_md = score(compat, sam_s);
+        for threads in ["1", "2"] {
+            let with_r = score(&[compat, &["-r", fasta, "-@", threads]].concat(), sam_s);
+            assert!(
+                with_r == from_md,
+                "{compat:?} -@ {threads}: -r differs from MD"
+            );
+        }
+    }
+    let lines = String::from_utf8(score(&[], sam_s)).unwrap();
+    assert_eq!(lines.lines().count(), 401);
+    assert!(
+        lines
+            .lines()
+            .skip(1)
+            .any(|l| l.split('\t').nth(2) != Some("0")),
+        "no read has a score"
+    );
+
+    // Without MD tags: -r scores them the same; without -r the error names -r.
+    let text = fs::read_to_string(&sam).unwrap();
+    let no_md: String = text
+        .lines()
+        .map(|l| match l.find("\tMD:Z:") {
+            Some(i) => &l[..i],
+            None => l,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    let no_md_path = dir.join("no_md.sam");
+    fs::write(&no_md_path, no_md).unwrap();
+    let no_md_s = no_md_path.to_str().unwrap();
+    assert!(score(&["-r", fasta], no_md_s) == score(&[], sam_s));
+    let o = run(&["score", "--quiet", no_md_s]);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("-r"));
+
+    // A stale MD tag (first read's MD shifted by one base) is scored from the reference and counted.
+    let stale: String = text.replacen("\tMD:Z:", "\tMD:Z:1A", 1);
+    let stale_path = dir.join("stale.sam");
+    fs::write(&stale_path, stale).unwrap();
+    let js = dir.join("stale.json");
+    let o = run(&[
+        "score",
+        "-r",
+        fasta,
+        "--summary",
+        js.to_str().unwrap(),
+        stale_path.to_str().unwrap(),
+        "-o",
+        dir.join("stale.tsv").to_str().unwrap(),
+    ]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("1 scored reads have an MD tag that disagrees")
+    );
+    assert!(fs::read(dir.join("stale.tsv")).unwrap() == score(&[], sam_s));
+    let j: serde_json::Value = serde_json::from_str(&fs::read_to_string(&js).unwrap()).unwrap();
+    assert_eq!(j["reference"]["bases_from"], "reference");
+    assert_eq!(j["reference"]["md_tags"]["disagree"], 1);
+    assert_eq!(j["reference"]["md_tags"]["agree"], 399);
+    assert_eq!(j["reference"]["md_tags"]["absent"], 0);
+
+    // Bad references: exit 2 before any output is written.
+    let other = dir.join("other.fa");
+    fs::write(&other, ">chrT\nACGT\n").unwrap();
+    fs::write(dir.join("other.fa.fai"), "chrT\t4\t6\t4\t5\n").unwrap();
+    let noindex = dir.join("noindex.fa");
+    fs::write(&noindex, ">chrT\nACGT\n").unwrap();
+    for (reference, message) in [
+        (other.to_str().unwrap(), "does not match the input header"),
+        (noindex.to_str().unwrap(), "samtools faidx"),
+        ("missing.fa", "no such file"),
+    ] {
+        let out = dir.join("bad.bam");
+        let o = run(&[
+            "filter",
+            "-t",
+            "3",
+            "-r",
+            reference,
+            sam_s,
+            "-o",
+            out.to_str().unwrap(),
+        ]);
+        assert_eq!(o.status.code(), Some(2), "{reference}");
+        assert!(
+            String::from_utf8_lossy(&o.stderr).contains(message),
+            "{reference}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        assert!(!out.exists());
+    }
 }

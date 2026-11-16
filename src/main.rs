@@ -10,6 +10,7 @@ use noodles::sam::alignment::Record as _;
 use pmdshodh::damage::DamageCounts;
 use pmdshodh::model::Params;
 use pmdshodh::reads::{Outcome, ReadFilters, SkipReason, process, process_bam};
+use pmdshodh::reference::Reference;
 use pmdshodh::sites::ReadScore;
 use pmdshodh::sites::{Library, Settings, Treatment};
 use pmdshodh::summary::{RunInfo, Summary};
@@ -275,6 +276,10 @@ struct ModelArgs {
     /// compression and writing). Output is identical for any value.
     #[arg(help_heading = "Performance", short = '@', long, default_value_t = 1)]
     threads: usize,
+    /// Reference FASTA, indexed with samtools faidx (bgzip also needs its .gzi). Reference bases
+    /// come from it instead of MD tags, so reads need no MD tag; MD tags are checked against it.
+    #[arg(help_heading = "Input", short = 'r', long)]
+    reference: Option<PathBuf>,
 }
 
 impl ModelArgs {
@@ -427,6 +432,7 @@ const BATCH: usize = 10_000;
 fn scan(
     reader: &mut InputReader,
     header: &noodles::sam::Header,
+    reference: &mut Option<Reference>,
     settings: &Settings,
     filters: &ReadFilters,
     summary: &mut Summary,
@@ -440,20 +446,20 @@ fn scan(
     if threads == 1 {
         let mut n_read = 0u64;
         loop {
-            let batch = read_batch(reader, header, max_reads, &mut n_read)?;
+            let batch = read_batch(reader, header, reference, max_reads, &mut n_read)?;
             if batch.is_empty() {
                 return Ok(());
             }
             let parts = score_batch(&batch, settings, filters, range);
             let first = n_read - batch.len() as u64;
-            consume_batch(&batch, &parts, first, summary, &mut on_scored)?;
+            consume_batch(&batch.records, &parts, first, summary, &mut on_scored)?;
         }
     }
 
     // The serial loop runs on a pool thread, so the pool's `threads` threads are all there is;
     // the calling thread just waits.
     rayon::scope(|s| {
-        let spawn = |batch: Vec<AlignmentRecord>| {
+        let spawn = |batch: Batch| {
             let (tx, rx) = std::sync::mpsc::sync_channel(1);
             s.spawn(move |_| {
                 let parts = score_batch(&batch, settings, filters, range);
@@ -462,7 +468,7 @@ fn scan(
             rx
         };
         // A task that panicked drops its sender; the scope then re-raises that panic.
-        let join = |rx: std::sync::mpsc::Receiver<(Vec<AlignmentRecord>, Scored)>| {
+        let join = |rx: std::sync::mpsc::Receiver<(Batch, Scored)>| {
             pmdshodh::bgzf::wait_for(&rx).expect("scoring task panicked")
         };
         let mut n_read = 0u64;
@@ -470,12 +476,12 @@ fn scan(
         let mut in_flight = std::collections::VecDeque::new();
         let mut consume_oldest = |in_flight: &mut std::collections::VecDeque<_>| {
             let (batch, parts) = join(in_flight.pop_front().unwrap());
-            consume_batch(&batch, &parts, first, summary, &mut on_scored)?;
+            consume_batch(&batch.records, &parts, first, summary, &mut on_scored)?;
             first += batch.len() as u64;
             Ok::<(), Failure>(())
         };
         loop {
-            match read_batch(reader, header, max_reads, &mut n_read) {
+            match read_batch(reader, header, reference, max_reads, &mut n_read) {
                 Ok(batch) if !batch.is_empty() => in_flight.push_back(spawn(batch)),
                 Ok(_) => {
                     while !in_flight.is_empty() {
@@ -505,14 +511,42 @@ const SCORED_AHEAD: usize = 2;
 /// chunk.
 type Scored = Vec<(Vec<Result<Outcome, String>>, Option<DamageCounts>)>;
 
+/// Records read together, and with `-r` each mapped record's reference window.
+struct Batch {
+    records: Vec<AlignmentRecord>,
+    /// All windows back to back; `windows[i]` is record `i`'s range in it.
+    bases: Vec<u8>,
+    windows: Vec<Option<std::ops::Range<usize>>>,
+}
+
+impl Batch {
+    fn len(&self) -> usize {
+        self.records.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+
+    fn window(&self, i: usize) -> Option<&[u8]> {
+        self.windows.get(i)?.clone().map(|r| &self.bases[r])
+    }
+}
+
 /// Read up to [`BATCH`] records; an empty batch means the end of the input (or of `max_reads`).
+/// With a reference, fetch each mapped record's window here, on the serial thread.
 fn read_batch(
     reader: &mut InputReader,
     header: &noodles::sam::Header,
+    reference: &mut Option<Reference>,
     max_reads: Option<u64>,
     n_read: &mut u64,
-) -> Result<Vec<AlignmentRecord>, Failure> {
-    let mut batch: Vec<AlignmentRecord> = Vec::with_capacity(BATCH);
+) -> Result<Batch, Failure> {
+    let mut batch = Batch {
+        records: Vec::with_capacity(BATCH),
+        bases: Vec::new(),
+        windows: Vec::new(),
+    };
     while batch.len() < BATCH && max_reads.is_none_or(|m| *n_read < m) {
         let mut record = AlignmentRecord::default();
         let n = reader
@@ -522,13 +556,94 @@ fn read_batch(
             break;
         }
         *n_read += 1;
-        batch.push(record);
+        if let Some(reference) = reference.as_mut() {
+            let window = fetch_window(reference, header, &record, &mut batch.bases)
+                .map_err(|e| Failure::Input(format!("record {}: {e}", *n_read)))?;
+            batch.windows.push(window);
+        }
+        batch.records.push(record);
     }
     Ok(batch)
 }
 
+/// Append a mapped record's reference bases (alignment start, CIGAR reference span) to `bases`
+/// and return their range; `None` for an unmapped record.
+fn fetch_window(
+    reference: &mut Reference,
+    header: &noodles::sam::Header,
+    record: &AlignmentRecord,
+    bases: &mut Vec<u8>,
+) -> io::Result<Option<std::ops::Range<usize>>> {
+    if record.flags()?.is_unmapped() {
+        return Ok(None);
+    }
+    let invalid = |msg: &str| io::Error::new(io::ErrorKind::InvalidData, msg.to_string());
+    let id = record
+        .reference_sequence_id(header)
+        .transpose()?
+        .ok_or_else(|| invalid("mapped read has no reference sequence"))?;
+    let start = record
+        .alignment_start()
+        .transpose()?
+        .ok_or_else(|| invalid("mapped read has no position"))?;
+    let span = record.alignment_span().transpose()?.unwrap_or(0);
+    let (name, _) = header
+        .reference_sequences()
+        .get_index(id)
+        .ok_or_else(|| invalid("reference sequence ID is not in the header"))?;
+    let name = std::str::from_utf8(name).map_err(|_| invalid("reference name is not UTF-8"))?;
+    let from = bases.len();
+    reference.fetch(name, usize::from(start) - 1, span, bases)?;
+    Ok(Some(from..bases.len()))
+}
+
+/// Open `-r` and check that every header sequence is in it with the same length, before any
+/// record is read (docs/design.md section 11).
+fn open_reference(
+    path: Option<&Path>,
+    header: &noodles::sam::Header,
+) -> Result<Option<Reference>, Failure> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    if !path.exists() {
+        return Err(Failure::Input(format!(
+            "cannot open reference {}: no such file",
+            path.display()
+        )));
+    }
+    let reference = Reference::open(path).map_err(|e| {
+        Failure::Input(format!(
+            "cannot read reference {} or its index: {e} (index it with samtools faidx {})",
+            path.display(),
+            path.display()
+        ))
+    })?;
+    let mut differ = Vec::new();
+    for (name, seq) in header.reference_sequences() {
+        let name = name.to_string();
+        let len = usize::from(seq.length());
+        match reference.length(&name) {
+            Some(l) if l == len => {}
+            Some(l) => differ.push(format!(
+                "{name} has {len} bases in the header, {l} in the reference"
+            )),
+            None => differ.push(format!("{name} is not in the reference")),
+        }
+    }
+    if let Some(first) = differ.first() {
+        return Err(Failure::Input(format!(
+            "reference {} does not match the input header ({} of {} sequences differ; {first})",
+            path.display(),
+            differ.len(),
+            header.reference_sequences().len()
+        )));
+    }
+    Ok(Some(reference))
+}
+
 fn score_batch(
-    batch: &[AlignmentRecord],
+    batch: &Batch,
     settings: &Settings,
     filters: &ReadFilters,
     range: Option<usize>,
@@ -536,14 +651,22 @@ fn score_batch(
     use rayon::prelude::*;
     let chunk = batch.len().div_ceil(rayon::current_num_threads()).max(1);
     batch
+        .records
         .par_chunks(chunk)
-        .map(|records| {
+        .enumerate()
+        .map(|(c, records)| {
             let mut damage = range.map(DamageCounts::new);
             let outcomes = records
                 .iter()
-                .map(|r| match r {
-                    AlignmentRecord::Bam(b) => process_bam(b, settings, filters, damage.as_mut()),
-                    _ => process(r, settings, filters, damage.as_mut()),
+                .enumerate()
+                .map(|(k, r)| {
+                    let window = batch.window(c * chunk + k);
+                    match r {
+                        AlignmentRecord::Bam(b) => {
+                            process_bam(b, settings, filters, window, damage.as_mut())
+                        }
+                        _ => process(r, settings, filters, window, damage.as_mut()),
+                    }
                 })
                 .collect();
             (outcomes, damage)
@@ -570,9 +693,10 @@ fn consume_batch(
         })?;
         summary.add_input(flags);
         match outcome {
-            Ok(Outcome::Scored { score, length }) => {
+            Ok(Outcome::Scored { score, length, md }) => {
                 let kept = on_scored(record, score)?;
                 summary.add_scored(score, *length, kept);
+                summary.add_md_check(*md);
             }
             Ok(Outcome::Skipped(reason)) => summary.add_skipped(*reason),
             Err(msg) => {
@@ -639,6 +763,7 @@ struct Finish<'a> {
     filters: ReadFilters,
     threshold: Option<f64>,
     upper_threshold: Option<f64>,
+    reference: Option<&'a Path>,
 }
 
 impl Finish<'_> {
@@ -651,6 +776,7 @@ impl Finish<'_> {
             filters: self.filters,
             threshold: self.threshold,
             upper_threshold: self.upper_threshold,
+            reference: self.reference.map(|p| p.display().to_string()),
         })
     }
 
@@ -672,6 +798,14 @@ impl Finish<'_> {
             r["scored"],
             skip_summary(summary.skipped())
         );
+        if summary.md_disagreeing() > 0 {
+            eprintln!(
+                "pmdshodh {}: {} scored reads have an MD tag that disagrees with the reference \
+                 (usually stale after realignment); they were scored from the reference",
+                self.subcommand,
+                summary.md_disagreeing()
+            );
+        }
     }
 }
 
@@ -680,6 +814,7 @@ fn run_score(args: &ScoreArgs) -> Result<(), Failure> {
     check_range(args.summary.range)?;
     init_threads(args.model.threads)?;
     let (mut reader, header) = open_reader(&args.input, args.model.threads)?;
+    let mut reference = open_reference(args.model.reference.as_deref(), &header)?;
     let out: Box<dyn Write + Send> = match &args.output {
         Some(path) if path.as_os_str() != "-" => Box::new(
             File::create(path)
@@ -695,6 +830,7 @@ fn run_score(args: &ScoreArgs) -> Result<(), Failure> {
     scan(
         &mut reader,
         &header,
+        &mut reference,
         &settings,
         &filters,
         &mut summary,
@@ -718,6 +854,7 @@ fn run_score(args: &ScoreArgs) -> Result<(), Failure> {
         filters,
         threshold: None,
         upper_threshold: None,
+        reference: args.model.reference.as_deref(),
     };
     let json = fin.json(&summary);
     if let Some(p) = &args.summary.summary {
@@ -732,10 +869,12 @@ fn run_damage(args: &DamageArgs) -> Result<(), Failure> {
     check_range(args.range)?;
     init_threads(args.model.threads)?;
     let (mut reader, header) = open_reader(&args.input, args.model.threads)?;
+    let mut reference = open_reference(args.model.reference.as_deref(), &header)?;
     let mut summary = Summary::new(args.range);
     scan(
         &mut reader,
         &header,
+        &mut reference,
         &settings,
         &filters,
         &mut summary,
@@ -751,6 +890,7 @@ fn run_damage(args: &DamageArgs) -> Result<(), Failure> {
         filters,
         threshold: None,
         upper_threshold: None,
+        reference: args.model.reference.as_deref(),
     };
     let json = fin.json(&summary);
     write_json(args.output.as_ref(), &json)?;
@@ -847,6 +987,7 @@ fn run_filter(args: &FilterArgs) -> Result<(), Failure> {
     };
 
     let (mut reader, in_header) = open_reader(&args.input, args.model.threads)?;
+    let mut reference = open_reference(args.model.reference.as_deref(), &in_header)?;
 
     let mut out_header = in_header.clone();
     let program = Map::<sam::header::record::value::map::Program>::builder()
@@ -878,6 +1019,7 @@ fn run_filter(args: &FilterArgs) -> Result<(), Failure> {
     scan(
         &mut reader,
         &in_header,
+        &mut reference,
         &settings,
         &filters,
         &mut summary,
@@ -921,6 +1063,7 @@ fn run_filter(args: &FilterArgs) -> Result<(), Failure> {
         filters,
         threshold: args.threshold,
         upper_threshold: args.upper_threshold,
+        reference: args.model.reference.as_deref(),
     };
     let json = fin.json(&summary);
     if let Some(p) = &args.summary.summary {

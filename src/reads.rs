@@ -6,7 +6,8 @@ use noodles::sam::alignment::record::data::field::{Tag, Value};
 
 use crate::damage::DamageCounts;
 use crate::sites::{
-    CigarOp, ReadScore, Settings, reference_along_read, reference_along_read_pmdtools, score_read,
+    CigarOp, ReadScore, Settings, md_from_reference, reference_along_read,
+    reference_along_read_from_fasta, reference_along_read_pmdtools, score_read,
 };
 
 /// Read-level filters (PMDtools `-m`, `--noclips`, `--noindels`).
@@ -53,6 +54,19 @@ impl SkipReason {
     }
 }
 
+/// How a scored read's MD tag compared with the reference given with `-r`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MdCheck {
+    /// No `-r`: reference bases came from MD.
+    NotChecked,
+    /// `-r` given; the read has no MD tag.
+    Absent,
+    /// `-r` given; MD gives the same reference bases.
+    Agrees,
+    /// `-r` given; MD is invalid or gives other reference bases (usually stale after realignment).
+    Disagrees,
+}
+
 /// Result of looking at one read.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Outcome {
@@ -60,6 +74,7 @@ pub enum Outcome {
     Scored {
         score: ReadScore,
         length: usize,
+        md: MdCheck,
     },
     Skipped(SkipReason),
 }
@@ -70,6 +85,7 @@ pub fn process(
     record: &dyn Record,
     settings: &Settings,
     filters: &ReadFilters,
+    reference: Option<&[u8]>,
     damage: Option<&mut DamageCounts>,
 ) -> Result<Outcome, String> {
     let fields = Fields {
@@ -80,7 +96,7 @@ pub fn process(
         quality_scores: &|| record.quality_scores().iter().collect(),
         md: &|| record.data().get(&Tag::MISMATCHED_POSITIONS),
     };
-    process_fields(&fields, settings, filters, damage)
+    process_fields(&fields, settings, filters, reference, damage)
 }
 
 /// [`process`] for a BAM record, reading its fields directly instead of through the generic
@@ -89,6 +105,7 @@ pub fn process_bam(
     record: &noodles::bam::Record,
     settings: &Settings,
     filters: &ReadFilters,
+    reference: Option<&[u8]>,
     damage: Option<&mut DamageCounts>,
 ) -> Result<Outcome, String> {
     let fields = Fields {
@@ -99,7 +116,7 @@ pub fn process_bam(
         quality_scores: &|| Ok(record.quality_scores().as_ref().to_vec()),
         md: &|| record.data().get(&Tag::MISMATCHED_POSITIONS),
     };
-    process_fields(&fields, settings, filters, damage)
+    process_fields(&fields, settings, filters, reference, damage)
 }
 
 type Field<'a, T> = &'a dyn Fn() -> T;
@@ -115,10 +132,12 @@ struct Fields<'a> {
     md: Field<'a, Option<std::io::Result<Value<'a>>>>,
 }
 
+/// `reference`: with `-r`, the reference bases from the alignment start, `reference_span` long.
 fn process_fields(
     record: &Fields<'_>,
     settings: &Settings,
     filters: &ReadFilters,
+    reference: Option<&[u8]>,
     damage: Option<&mut DamageCounts>,
 ) -> Result<Outcome, String> {
     let flags = (record.flags)().map_err(|e| format!("invalid FLAG: {e}"))?;
@@ -175,23 +194,65 @@ fn process_fields(
         ));
     }
 
-    let md = match (record.md)() {
-        None => return Err("mapped read has no MD tag (add it with samtools calmd)".into()),
-        Some(Ok(Value::String(md))) => md.to_vec(),
-        Some(Ok(_)) => return Err("MD tag is not a string".into()),
-        Some(Err(e)) => return Err(format!("invalid MD tag: {e}")),
-    };
-    // Always validate with the correct reconstruction, so invalid records are rejected in both modes.
-    let mut refs = reference_along_read(&seq, &cigar, &md)?;
     let reverse = flags.is_reverse_complemented();
-    if settings.pmdtools_compat {
-        refs = reference_along_read_pmdtools(&seq, &cigar, &md, reverse);
-    }
+    let (refs, md_check) = match reference {
+        // `-r`: the reference is the truth; MD, if present, is only compared with it.
+        Some(window) => {
+            let refs = reference_along_read_from_fasta(&seq, &cigar, window)?;
+            let md_check = match (record.md)() {
+                None => MdCheck::Absent,
+                Some(Ok(Value::String(md))) => {
+                    match reference_along_read(&seq, &cigar, md.as_ref()) {
+                        // MD can only give a `=` read base back as `=`.
+                        Ok(from_md)
+                            if from_md
+                                .iter()
+                                .zip(&refs)
+                                .zip(&seq)
+                                .all(|((m, r), &b)| m == r || b == b'=') =>
+                        {
+                            MdCheck::Agrees
+                        }
+                        _ => MdCheck::Disagrees,
+                    }
+                }
+                Some(_) => MdCheck::Disagrees,
+            };
+            let refs = if settings.pmdtools_compat {
+                // As `samtools calmd | pmdtools`: PMDtools' reconstruction of a calmd MD tag.
+                let md = md_from_reference(&seq, &cigar, window);
+                reference_along_read_pmdtools(&seq, &cigar, &md, reverse)
+            } else {
+                refs
+            };
+            (refs, md_check)
+        }
+        None => {
+            let md = match (record.md)() {
+                None => {
+                    return Err(
+                        "mapped read has no MD tag (pass the reference with -r, or add MD with samtools calmd)"
+                            .into(),
+                    );
+                }
+                Some(Ok(Value::String(md))) => md.to_vec(),
+                Some(Ok(_)) => return Err("MD tag is not a string".into()),
+                Some(Err(e)) => return Err(format!("invalid MD tag: {e}")),
+            };
+            // Always validate with the correct reconstruction, so invalid records are rejected in both modes.
+            let mut refs = reference_along_read(&seq, &cigar, &md)?;
+            if settings.pmdtools_compat {
+                refs = reference_along_read_pmdtools(&seq, &cigar, &md, reverse);
+            }
+            (refs, MdCheck::NotChecked)
+        }
+    };
     if let Some(d) = damage {
         d.add_read(&seq, &qual, &refs, reverse, settings);
     }
     Ok(Outcome::Scored {
         score: score_read(&seq, &qual, &refs, reverse, settings),
         length: seq.len(),
+        md: md_check,
     })
 }

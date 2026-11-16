@@ -114,6 +114,97 @@ pub fn reference_along_read(
     Ok(refs)
 }
 
+/// Reference bases the CIGAR consumes (`M`, `=`, `X`, `D`): the length of the window `-r` fetches.
+pub fn reference_span(cigar: &[CigarOp]) -> usize {
+    cigar
+        .iter()
+        .map(|op| match op {
+            CigarOp::Match(n)
+            | CigarOp::SequenceMatch(n)
+            | CigarOp::SequenceMismatch(n)
+            | CigarOp::Deletion(n) => *n,
+            _ => 0,
+        })
+        .sum()
+}
+
+/// [`reference_along_read`] from the reference itself (`-r`): `window` holds the reference bases
+/// from the alignment start, [`reference_span`] long. Bases are uppercased, as the default
+/// reconstruction does for MD.
+pub fn reference_along_read_from_fasta(
+    seq: &[u8],
+    cigar: &[CigarOp],
+    window: &[u8],
+) -> Result<Vec<Option<u8>>, String> {
+    let mut refs = Vec::with_capacity(seq.len());
+    let mut r = 0;
+    for op in cigar {
+        match *op {
+            CigarOp::Match(n) | CigarOp::SequenceMatch(n) | CigarOp::SequenceMismatch(n) => {
+                refs.extend(
+                    window[r..r + n]
+                        .iter()
+                        .map(|b| Some(b.to_ascii_uppercase())),
+                );
+                r += n;
+            }
+            CigarOp::Insertion(n) | CigarOp::SoftClip(n) => refs.extend((0..n).map(|_| None)),
+            CigarOp::Deletion(n) => r += n,
+            CigarOp::HardClip(_) => {}
+            CigarOp::Unsupported => return Err("unsupported CIGAR operation (N or P)".into()),
+        }
+    }
+    if refs.len() != seq.len() {
+        return Err(format!(
+            "CIGAR covers {} read bases but SEQ has {}",
+            refs.len(),
+            seq.len()
+        ));
+    }
+    Ok(refs)
+}
+
+/// The MD tag `samtools calmd` would write for this read: matching runs as numbers, mismatched
+/// and deleted reference bases as stored in the FASTA (case kept), a `0` between adjacent
+/// letters and after a deletion that a mismatch follows. Read and reference bases match when
+/// equal ignoring case, or when the read has `=`.
+pub fn md_from_reference(seq: &[u8], cigar: &[CigarOp], window: &[u8]) -> Vec<u8> {
+    let mut md = Vec::new();
+    let mut run = 0usize;
+    let (mut s, mut r) = (0, 0);
+    let flush = |md: &mut Vec<u8>, run: &mut usize| {
+        md.extend_from_slice(run.to_string().as_bytes());
+        *run = 0;
+    };
+    for op in cigar {
+        match *op {
+            CigarOp::Match(n) | CigarOp::SequenceMatch(n) | CigarOp::SequenceMismatch(n) => {
+                for _ in 0..n {
+                    let (read, refb) = (seq[s], window[r]);
+                    if read == b'=' || read.eq_ignore_ascii_case(&refb) {
+                        run += 1;
+                    } else {
+                        flush(&mut md, &mut run);
+                        md.push(refb);
+                    }
+                    s += 1;
+                    r += 1;
+                }
+            }
+            CigarOp::Insertion(n) | CigarOp::SoftClip(n) => s += n,
+            CigarOp::Deletion(n) => {
+                flush(&mut md, &mut run);
+                md.push(b'^');
+                md.extend_from_slice(&window[r..r + n]);
+                r += n;
+            }
+            CigarOp::HardClip(_) | CigarOp::Unsupported => {}
+        }
+    }
+    flush(&mut md, &mut run);
+    md
+}
+
 /// MD tags that disagree with the alignment are usually stale (the read was realigned after MD
 /// was written), so say how to fix them.
 fn md_hint(e: String) -> String {
@@ -671,5 +762,62 @@ mod tests {
         let mut s = default_settings(Library::DoubleStranded, Treatment::None);
         s.min_baseq = 41;
         assert_eq!(score("TAAA", "CAAA", false, &s).n_sites, 0);
+    }
+    /// `-r` reconstruction equals the MD reconstruction of the MD that calmd-style
+    /// `md_from_reference` writes, for mismatches, deletions, insertions, soft clips, lowercase
+    /// (soft-masked) reference bases; `=` read bases are checked separately.
+    #[test]
+    fn reference_window_matches_md_written_from_it() {
+        use CigarOp::*;
+        let cases: &[(&str, &[CigarOp], &str, &str)] = &[
+            ("ACGTACGT", &[Match(8)], "ACGTACGT", "8"),
+            ("ACGTACGT", &[Match(8)], "TCGTACGA", "0T6A0"),
+            ("ACGTACGT", &[Match(8)], "acgtaCgt", "8"),
+            (
+                "ACGTACGT",
+                &[Match(4), Deletion(2), Match(4)],
+                "ACGTggACGA",
+                "4^gg3A0",
+            ),
+            (
+                "ACGTACGT",
+                &[Match(4), Deletion(1), Match(4)],
+                "ACGTcTCGT",
+                "4^c0T3",
+            ),
+            (
+                "ACGTACGT",
+                &[SoftClip(2), Match(3), Insertion(1), Match(2)],
+                "GTACG",
+                "3C0G0",
+            ),
+            (
+                "ACGTACGT",
+                &[HardClip(3), Match(8), HardClip(2)],
+                "ACGTACGG",
+                "7G0",
+            ),
+        ];
+        for &(seq, cigar, window, md) in cases {
+            let (seq, window) = (seq.as_bytes(), window.as_bytes());
+            assert_eq!(reference_span(cigar), window.len(), "{cigar:?}");
+            let written = md_from_reference(seq, cigar, window);
+            assert_eq!(
+                String::from_utf8_lossy(&written),
+                md,
+                "{cigar:?} {:?}",
+                window
+            );
+            let from_md = reference_along_read(seq, cigar, &written).unwrap();
+            let from_fasta = reference_along_read_from_fasta(seq, cigar, window).unwrap();
+            assert_eq!(from_md, from_fasta, "{cigar:?} {md}");
+        }
+        // A `=` read base matches; MD can only give `=` back for it, the reference gives the base.
+        assert_eq!(md_from_reference(b"AC=T", &[Match(4)], b"ACGT"), b"4");
+        assert_eq!(
+            reference_along_read_from_fasta(b"AC=T", &[Match(4)], b"ACGT").unwrap()[2],
+            Some(b'G')
+        );
+        assert!(reference_along_read_from_fasta(b"ACG", &[Match(2)], b"AC").is_err());
     }
 }

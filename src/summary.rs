@@ -8,10 +8,10 @@ use serde_json::{Value, json};
 
 use crate::damage::{BASES, DamageCounts, EndCounts};
 use crate::model::NULL_BACKGROUND;
-use crate::reads::{ReadFilters, SkipReason};
+use crate::reads::{MdCheck, ReadFilters, SkipReason};
 use crate::sites::{Library, ReadScore, Settings, Treatment};
 
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 const HIST_MIN: f64 = -20.0;
 const HIST_MAX: f64 = 40.0;
 const HIST_BIN: f64 = 0.5;
@@ -25,6 +25,8 @@ pub struct RunInfo<'a> {
     pub filters: ReadFilters,
     pub threshold: Option<f64>,
     pub upper_threshold: Option<f64>,
+    /// The `-r` FASTA, if given.
+    pub reference: Option<String>,
 }
 
 pub struct Summary {
@@ -40,10 +42,29 @@ pub struct Summary {
     overflow: u64,
     length_scored: BTreeMap<usize, u64>,
     length_kept: BTreeMap<usize, u64>,
+    /// With `-r`: scored reads whose MD tag agrees with the reference, disagrees, or is absent.
+    md_agree: u64,
+    md_disagree: u64,
+    md_absent: u64,
     pub damage: DamageCounts,
 }
 
 impl Summary {
+    /// Count how a scored read's MD tag compared with the `-r` reference.
+    pub fn add_md_check(&mut self, md: MdCheck) {
+        match md {
+            MdCheck::NotChecked => {}
+            MdCheck::Absent => self.md_absent += 1,
+            MdCheck::Agrees => self.md_agree += 1,
+            MdCheck::Disagrees => self.md_disagree += 1,
+        }
+    }
+
+    /// Scored reads whose MD tag disagreed with the `-r` reference.
+    pub fn md_disagreeing(&self) -> u64 {
+        self.md_disagree
+    }
+
     pub fn new(range: usize) -> Self {
         let bins = ((HIST_MAX - HIST_MIN) / HIST_BIN).round() as usize;
         Summary {
@@ -68,6 +89,9 @@ impl Summary {
             underflow: 0,
             overflow: 0,
             length_scored: BTreeMap::new(),
+            md_agree: 0,
+            md_disagree: 0,
+            md_absent: 0,
             length_kept: BTreeMap::new(),
             damage: DamageCounts::new(range),
         }
@@ -143,6 +167,15 @@ impl Summary {
             "subcommand": info.subcommand,
             "command": info.command,
             "input": info.input,
+            "reference": {
+                "path": info.reference,
+                "bases_from": if info.reference.is_some() { "reference" } else { "md" },
+                "md_tags": info.reference.as_ref().map(|_| json!({
+                    "agree": self.md_agree,
+                    "disagree": self.md_disagree,
+                    "absent": self.md_absent,
+                })),
+            },
             "mode": {
                 "library": match s.library { Library::DoubleStranded => "ds", Library::SingleStranded => "ss" },
                 "treatment": match s.treatment { Treatment::None => "none", Treatment::Half => "half", Treatment::Full => "full" },
