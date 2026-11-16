@@ -7,6 +7,12 @@ Changes to the JSON run summary are listed with its `format_version`.
 ## [Unreleased]
 
 ### Added
+- `-r, --reference FILE`: take reference bases from an indexed FASTA (`samtools faidx`; bgzip with `.gzi` too) instead of MD tags, so reads need no MD tag. MD tags that are present are compared with the reference; disagreeing (usually stale) tags are reported on stderr and counted in the summary, and those reads are scored from the reference. Every header sequence must be in the index with the same length; this is checked before any record is read. With `--pmdtools-compat`, the reference bases go through an MD tag written the way `samtools calmd` writes it (reference bases in uppercase, soft-masked ones included), so scores match PMDtools run on calmd output.
+- Real-data checks of `-r`: samtools calmd and PMDtools 0.60 under WSL Ubuntu 24.04, every read compared.
+  - BER11_L_NOuser (14,006,183 reads, soft-masked equCab2) and Motala3 (23,622,338 reads, human_g1k_v37): `-r` on the original BAM against the MD path on calmd output gives 0 reads differing in score or site count in default mode on both. In `--pmdtools-compat`, Motala3 also has 0 differing reads.
+  - PMDtools on calmd output against `--pmdtools-compat -r`: Motala3 has 0 reads above 1e-6 (largest difference 4.97e-14). BER11 has 339 above 1e-6. All 339 have an MD tag in the input BAM with lowercase reference bases; calmd left those tags as they were, and PMDtools never counts a lowercase base as C or G. With MD removed from those reads (483 have lowercase MD) and recomputed by calmd, PMDtools and `--pmdtools-compat -r` agree on all 483 (largest difference 2.29e-14).
+  - Motala3 has 107 reads whose MD tag disagrees with the reference.
+- JSON summary `format_version` 2: a `reference` section with the `-r` path, whether reference bases came from MD tags or the FASTA, and (with `-r`) how many scored reads had MD tags that agree, disagree or are absent.
 - PyPI packaging: wheels that carry the `pmdshodh` binary (Linux x86_64 and aarch64 with glibc 2.17 or newer, macOS arm64 and x86_64, Windows x86_64), built and published by a workflow with PyPI trusted publishing. Version 0.1.0 was published to PyPI on 2026-11-15, built from the `v0.1.0` tag.
 
 ## [0.1.0] - 2026-11-14

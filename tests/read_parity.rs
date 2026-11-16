@@ -66,7 +66,7 @@ fn read_scores_match_pmdtools_0_60_in_all_modes() {
             let record = record.unwrap();
             assert_eq!(record.name().unwrap().to_string(), row[0], "read order");
             let want: f64 = row[col + 1].parse().unwrap();
-            let got = match process(record.as_ref(), &s, &ReadFilters::default(), None) {
+            let got = match process(record.as_ref(), &s, &ReadFilters::default(), None, None) {
                 Ok(Outcome::Scored { score, .. }) => score.pmds,
                 other => panic!("{mode} {}: expected a score, got {other:?}", row[0]),
             };
@@ -113,7 +113,7 @@ fn default_mode_matches_pmdtools_where_its_reference_is_correct() {
             .any(|k| matches!(k, Kind::Deletion | Kind::SequenceMatch));
         let want: f64 = row[1].parse().unwrap();
         let Ok(Outcome::Scored { score: got, .. }) =
-            process(record.as_ref(), &s, &ReadFilters::default(), None)
+            process(record.as_ref(), &s, &ReadFilters::default(), None, None)
         else {
             panic!("{}: not scored", row[0]);
         };

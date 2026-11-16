@@ -50,11 +50,9 @@ cargo build --release
 ./target/release/pmdshodh --version
 ```
 
-**Input requirement:** alignments must carry an **MD tag**. If your aligner does not write one, add it with `samtools calmd`:
-
-```bash
-samtools calmd -b input.bam reference.fa > input.md.bam
-```
+**Input requirement:** pmdshodh needs each read's reference bases. Either pass the reference with `-r`, or give it reads with an **MD tag**.
+- **With `-r ref.fa`:** the FASTA must be indexed with `samtools faidx`. Reference bases come from the FASTA, so reads need no MD tag. Any MD tags present are checked against the reference, and stale ones are counted.
+- **Without `-r`:** every mapped read needs an MD tag. If your aligner doesn't write one, add it with `samtools calmd -b input.bam reference.fa > input.md.bam`.
 
 ## Quick start
 
@@ -127,6 +125,7 @@ PMDtools option names are accepted as aliases (shown in the second column).
 | `--range N` | all | Positions from each read end in damage tables (default 30, at least 1). |
 | `-n, --max-reads N` | `damage` | Stop after N reads. |
 | `-@, --threads N` | all | Threads (default 1): at most N do work at once, so you can pass your CPU allocation. |
+| `-r, --reference FILE` | all | Indexed reference FASTA (`samtools faidx`; bgzip also needs `.gzi`). Reference bases come from it instead of MD tags, and MD tags are checked against it. Every header sequence must be in it with the same length. |
 | `--pmdtools-compat` | all | Reproduce PMDtools 0.60 exactly, including its bugs. |
 | `--quiet` | all | Suppress the summary line on stderr. |
 
@@ -141,11 +140,12 @@ PMDtools option names are accepted as aliases (shown in the second column).
 
 ### JSON run summary
 
-A single file per run, versioned with `format_version` (currently `1`). It contains:
+A single file per run, versioned with `format_version` (currently `2`). It contains:
 
 | Section | Contents |
 |---|---|
 | `tool`, `command`, `mode`, `model`, `filters` | Version, command line, library and treatment, model parameters, thresholds |
+| `reference` | The `-r` FASTA (if any); whether reference bases came from MD or the FASTA; with `-r`, how many scored reads had MD tags agreeing, disagreeing or absent |
 | `reads` | Input, scored, kept and removed counts; skipped reads by reason; flag counts (duplicate, secondary, supplementary, …) |
 | `score_histogram`, `length_histogram` | Score distribution (0.5-wide bins from −20 to 40), read lengths |
 | `damage` | Counts of read bases A/C/G/T at reference C and G, by position from each molecule end; first-base C→T rate with standard error |
@@ -196,7 +196,7 @@ pmdshodh corrects these PMDtools behaviours by default. Use `--pmdtools-compat` 
 
 | Situation | PMDtools 0.60 | pmdshodh |
 |---|---|---|
-| Mapped read without an MD tag | Dropped silently | Error (exit 2) |
+| Mapped read without an MD tag | Dropped silently | Error (exit 2); with `-r`, scored from the reference |
 | MD string without a `0` after a deletion (as written by MALT) | Misparsed silently | Parsed correctly |
 | Hard-clipped reads | Dropped | Scored |
 | Existing `DS:Z` tag, or `DS:Z:` text in qualities | Crash | Handled |
