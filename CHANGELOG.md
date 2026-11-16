@@ -6,6 +6,10 @@ Changes to the JSON run summary are listed with its `format_version`.
 
 ## [Unreleased]
 
+### Fixed
+- `score -o FILE` writes under a temporary name and renames on success, as `filter` does, so a failed run no longer leaves a partial table.
+- gzip-compressed input that is not BGZF (as `gzip` writes it) is reported as such, with a hint to recompress with bgzip, instead of "invalid BGZF header".
+
 ## [0.2.0] - 2026-11-16
 
 Reference-based scoring (`-r`) and CRAM input: `pmdshodh filter -r ref.fa in.bam` replaces `samtools calmd | pmdtools | samtools view`.

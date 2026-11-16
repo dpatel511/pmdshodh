@@ -1399,3 +1399,41 @@ fn cram_multi_reference_slice_pairs_and_wrong_reference() {
     assert_eq!(header.reference_sequences().len(), 2);
     assert!(records.is_empty());
 }
+
+/// `score -o FILE` leaves no file when the run fails part-way, as filter does; a gzip (not BGZF)
+/// input is an input error that names bgzip.
+#[test]
+fn score_output_is_atomic_and_plain_gzip_is_named() {
+    let dir = tmp_dir("score_atomic");
+    let sam = dir.join("bad.sam");
+    many_reads_sam(&sam, 25_000, None, Some(20_001));
+    let out = dir.join("scores.tsv");
+    let o = run(&["score", sam.to_str().unwrap(), "-o", out.to_str().unwrap()]);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(!out.exists());
+    assert!(fs::read_dir(&dir).unwrap().all(|e| {
+        !e.unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains("pmdshodh-tmp")
+    }));
+    // A good run still writes the file.
+    let good = dir.join("good.sam");
+    many_reads_sam(&good, 10, None, None);
+    let o = run(&[
+        "score",
+        "--quiet",
+        good.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    assert!(o.status.success());
+    assert_eq!(fs::read_to_string(&out).unwrap().lines().count(), 11);
+
+    // gzip header (FLG without FEXTRA) in front of SAM text.
+    let gz = dir.join("reads.sam.gz");
+    fs::write(&gz, [0x1f, 0x8b, 0x08, 0x00, 0, 0, 0, 0, 0, 0x03]).unwrap();
+    let o = run(&["score", gz.to_str().unwrap()]);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("not BGZF: recompress it with bgzip"));
+}
