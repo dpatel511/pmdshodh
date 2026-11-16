@@ -6,6 +6,9 @@ Changes to the JSON run summary are listed with its `format_version`.
 
 ## [Unreleased]
 
+### Changed
+- Single-stranded scoring (`--library ss`) is faster. The damage, error and null terms are computed once per run instead of at every site (bit-identical), and reads are no longer copied into molecule orientation. `score -@ 1 --library ss` on 2 M BER11_L_NOuser reads: median 6.98 → 5.53 s (5 alternating runs each; WSL Ubuntu 24.04, i5-13500H).
+
 ## [0.2.0] - 2026-11-16
 
 Reference-based scoring (`-r`) and CRAM input: `pmdshodh filter -r ref.fa in.bam` replaces `samtools calmd | pmdtools | samtools view`.
