@@ -6,6 +6,7 @@ Exits nonzero if any parity or thread-identity check fails.
 """
 import csv
 import itertools
+import os
 import statistics
 import subprocess
 import sys
@@ -90,8 +91,22 @@ def main():
         report(f"{i} score -@ 8 == -@ 1", na == nb and d == 0, f"{na} vs {nb} lines, differing {d}")
         na, nb, d = compare(lines(f"{w}.metadmg.t1.txt"), lines(f"{w}.metadmg.t8.txt"))
         out.append(f"INFO\t{i} metaDMG -@ 8 vs -@ 1 output\t{na} vs {nb} lines, differing {d}")
+        na, nb, d = compare(lines(f"{w}.score_ss.t1.tsv"), lines(f"{w}.score_ss.t8.tsv"))
+        report(f"{i} score --library ss -@ 8 == -@ 1", na == nb and d == 0, f"{na} vs {nb} lines, differing {d}")
 
-    # 4. Timing summary: median and range per input and configuration.
+        # 4. -r and CRAM rows (only where run.sh had a reference).
+        if os.path.exists(f"{w}.filter_ref.t1.bam"):
+            for kind in ("filter_ref", "filter_cram"):
+                na, nb, d = compare(records(f"{w}.{kind}.t1.bam"), records(f"{w}.{kind}.t8.bam"))
+                report(f"{i} {kind} -@ 8 records == -@ 1", na == nb and d == 0, f"{na} vs {nb}, differing {d}")
+            # -r scores from the reference, so reads with stale MD tags can differ (informational).
+            na, nb, d = compare(records(f"{w}.filter.t1.bam"), records(f"{w}.filter_ref.t1.bam"))
+            out.append(f"INFO\t{i} filter (MD) vs filter -r records\t{na} vs {nb}, differing positions {d}")
+            # CRAM drops the MD/NM tags htslib can regenerate, so compare fields 1-11.
+            na, nb, d = compare(records(f"{w}.filter_ref.t1.bam", 11), records(f"{w}.filter_cram.t1.bam", 11))
+            report(f"{i} filter CRAM fields 1-11 == filter -r", na == nb and d == 0, f"{na} vs {nb}, differing {d}")
+
+    # 5. Timing summary: median and range per input and configuration.
     rows = defaultdict(list)
     with open(f"{results}/times.tsv") as f:
         for r in csv.DictReader(f, delimiter="\t"):

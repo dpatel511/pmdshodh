@@ -14,6 +14,10 @@ BIN=$BENCH/pmdshodh/target/release/pmdshodh
 PMDTOOLS=$BENCH/pmdtools/PMDtools-0.60/pmdtools.0.60.py
 DATA=$BENCH/data
 WORK=$BENCH/work
+# Reference FASTA per input (for the -r and CRAM rows), and where the CRAM copies are.
+REFS=${REFS:-$BENCH/refs}
+REF_MAP=${REF_MAP:-"BER11_L_NOuser=equCab2.fa Motala3=human_g1k_v37.fasta"}
+CRAMS=${CRAMS:-$BENCH/cramwork}
 export PATH=/root/miniforge3/envs/pmdshodh-bench/bin:$PATH
 
 mkdir -p "$OUT/logs" "$WORK"
@@ -65,6 +69,8 @@ timed() {
 
 warm() { log "warm cache $1"; cat "$1" > /dev/null; }
 
+ref_for() { local kv; for kv in $REF_MAP; do [ "${kv%%=*}" = "$1" ] && echo "$REFS/${kv#*=}"; done; return 0; }
+
 bench_input() {
   local i=$1 in=$DATA/$1.bam
   warm "$in"
@@ -88,6 +94,23 @@ bench_input() {
   done; done
   timed "$i.score_compat.t8.r1" "$i" score_compat_t8 1 \
     "$BIN score --quiet --pmdtools-compat -@ 8 $in -o $WORK/$i.score_compat.t8.tsv"
+  for t in 1 8; do for r in $(seq 1 "$RUNS"); do
+    timed "$i.score_ss.t$t.r$r" "$i" "score_ss_t$t" "$r" \
+      "$BIN score --quiet --library ss -@ $t $in -o $WORK/$i.score_ss.t$t.tsv"
+  done; done
+  local ref; ref=$(ref_for "$i")
+  [ -n "$ref" ] && [ -s "$ref" ] || return 0
+  for t in 1 8; do for r in $(seq 1 "$RUNS"); do
+    timed "$i.filter_ref.t$t.r$r" "$i" "filter_ref_t$t" "$r" \
+      "$BIN filter --threshold 3 --quiet -r $ref -@ $t $in -o $WORK/$i.filter_ref.t$t.bam"
+  done; done
+  # The same reads as CRAM (samtools view -C -T ref), decoded with the reference.
+  [ -s "$CRAMS/$i.cram" ] || return 0
+  warm "$CRAMS/$i.cram"
+  for t in 1 8; do for r in $(seq 1 "$RUNS"); do
+    timed "$i.filter_cram.t$t.r$r" "$i" "filter_cram_t$t" "$r" \
+      "$BIN filter --threshold 3 --quiet -r $ref -@ $t $CRAMS/$i.cram -o $WORK/$i.filter_cram.t$t.bam"
+  done; done
 }
 
 # Synthetic inputs for the memory test: BER11_L_NOuser reads, repeated as needed.
