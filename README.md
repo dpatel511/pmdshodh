@@ -4,7 +4,7 @@
 
 pmdshodh scores every read in a SAM, BAM or CRAM file for ancient DNA damage, keeps or removes reads by score, and summarises damage patterns. It uses the scoring model of [PMDtools](https://github.com/pontussk/PMDtools) 0.60, fixes PMDtools' known errors by default (`--pmdtools-compat` reproduces PMDtools exactly), reads and writes alignments directly, and runs on multiple threads.
 
-> **Status:** alpha (v0.2.0). Scores have been validated against PMDtools on real and synthetic data. Performance benchmarks are in [docs/benchmarks.md](docs/benchmarks.md); a Bioconda package is still to come.
+> **Status:** alpha (v0.2.1). Scores have been validated against PMDtools on real and synthetic data. Performance benchmarks are in [docs/benchmarks.md](docs/benchmarks.md); a Bioconda package is still to come.
 
 ## Contents
 
@@ -39,7 +39,7 @@ pmdshodh implements this score as a single program, with no `samtools calmd | py
 
 **pip:** `pip install pmdshodh` installs the `pmdshodh` command; the wheels contain the compiled binary only. Wheels are built for Linux x86_64 and aarch64 (glibc 2.17 or newer), macOS arm64 and x86_64, and Windows x86_64.
 
-**Prebuilt binaries:** download the archive for your platform from [GitHub Releases](https://github.com/dpatel511/pmdshodh/releases), e.g. `pmdshodh-0.2.0-x86_64-unknown-linux-gnu.tar.gz`, and check it against `SHA256SUMS`. Linux binaries need glibc 2.17 or newer (CentOS/RHEL 7 and later). Builds are for Linux x86_64 and aarch64, macOS arm64 and x86_64, and Windows x86_64.
+**Prebuilt binaries:** download the archive for your platform from [GitHub Releases](https://github.com/dpatel511/pmdshodh/releases), e.g. `pmdshodh-0.2.1-x86_64-unknown-linux-gnu.tar.gz`, and check it against `SHA256SUMS`. Linux binaries need glibc 2.17 or newer (CentOS/RHEL 7 and later). Builds are for Linux x86_64 and aarch64, macOS arm64 and x86_64, and Windows x86_64.
 
 **From source:** this needs Rust 1.91 or newer, the minimum of the noodles dependency. CI tests 1.91 and the latest stable.
 
@@ -225,9 +225,9 @@ The complete list, with reasoning: [docs/design.md](docs/design.md) §5.
 - CRAM is input only; `filter` writes SAM or BAM.
 - From CRAM input, kept records have no MD or NM tag unless the CRAM stored one. htslib usually leaves these tags out and regenerates them on decoding; pmdshodh does not. Run `samtools calmd` on the output if a later step needs MD.
 - CRAM input must be scored against the reference it was written with, so a masked FASTA (as nf-core/eager uses to mask positions) fails the checksum check. Mask BAM input instead, or decode the CRAM to BAM first.
-- CRAM input loads whole reference sequences, because noodles decodes against them. Peak memory with `score -@ 8 -r` was 1,181 MB (horse) and 1,247 MB (human) for CRAM, against 110 MB and 105 MB for the same reads as BAM (median of 3 runs). Checking the reference checksums added about 19% to CRAM run time ([docs/design.md](docs/design.md) §11).
+- CRAM input loads whole reference sequences, because noodles decodes against them. With `filter -r -@ 8`, CRAM took 38.7 s (horse) and 58.5 s (human) with peak memory of 1,190 MB and 1,248 MB, against 12.6 s and 14.8 s with 112 MB for the same reads as BAM (median of 5 runs, [docs/benchmarks.md](docs/benchmarks.md)). CRAM input also checks every reference sequence against its checksum ([docs/design.md](docs/design.md) §11).
 - Scores can differ in the last digits between operating systems, because each platform's math library rounds `ln` and `powf` differently. On the test fixture, Windows differed from Linux and macOS by at most 1.8e-15. Only a score this close to a threshold could be filtered differently.
-- Benchmarks cover one laptop and two double-stranded libraries: [docs/benchmarks.md](docs/benchmarks.md). In that round, metaDMG `pmd` scored reads 8–15% faster than `pmdshodh score` on one thread. Since then, `score` skips damage counting without `--summary`; on 2 M reads it took 6.18 s against metaDMG's 8.23 s (CHANGELOG.md).
+- Benchmarks cover one laptop and two double-stranded libraries: [docs/benchmarks.md](docs/benchmarks.md). On one thread, `pmdshodh filter` was 32–39× faster than the PMDtools pipeline, and `pmdshodh score` was faster than metaDMG `pmd` in all 10 alternating pairs: 48.8 s against 61.7 s and 60.6 s against 71.9 s (medians).
 - No real single-stranded library has been tested; single-stranded parity rests on synthetic reads.
 - UDG-half damage *tables* do not yet match PMDtools (UDG-half *scores* do).
 

@@ -6,6 +6,13 @@ Changes to the JSON run summary are listed with its `format_version`.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-17
+
+Bug fixes and speed-ups. Two inputs that used to be read silently are now input errors (exit 2): BGZF input that ends without its end-of-file marker (usually a truncated file), and reads with `=` bases when no reference is given with `-r`. Default scores change only for reads with `=` bases scored with `-r`.
+
+### Added
+- Benchmarks of `--library ss`, `-r` and CRAM input, and a new benchmark round on this release: [docs/benchmarks.md](docs/benchmarks.md).
+
 ### Changed
 - Read bases written as `=` (same as the reference, as `samtools calmd -e` writes them) are scored in default mode. With `-r` they take their reference base; without `-r` a read with `=` bases is an input error naming `-r`, because MD does not give their reference bases. PMDtools never counts `=` as C or G: a read with nine `=` at reference C scored 5.03 from 1 site instead of 4.22 from 10. `--pmdtools-compat` keeps that. Kept records are written with their `=` bases.
 - Damage tables (`--summary`, `damage`) count only positions within `--range` of the read ends instead of looking at every base. Output is identical. `score -@ 1 --summary` on 2 M BER11_L_NOuser reads: median 9.16 → 8.33 s (5 alternating runs each; WSL Ubuntu 24.04, i5-13500H).
@@ -84,6 +91,7 @@ First release.
 - `score -o -` writes to stdout; it used to create a file named `-`.
 - `--pmdtools-compat` now also reproduces PMDtools 0.60 for lowercase reference bases in MD (never counted as C or G) and for reverse-strand reads whose MD contains characters PMDtools drops when reverse-complementing (e.g. lowercase `n`). Default scoring is unchanged; both are listed as departures in docs/design.md.
 
-[Unreleased]: https://github.com/dpatel511/pmdshodh/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/dpatel511/pmdshodh/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/dpatel511/pmdshodh/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/dpatel511/pmdshodh/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/dpatel511/pmdshodh/releases/tag/v0.1.0
