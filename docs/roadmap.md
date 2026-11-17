@@ -35,7 +35,7 @@ Each milestone ends with passing tests and, where a claim is made, measured evid
 | later | **Per-reference summaries** | Damage and score summaries per reference sequence for metagenomic BAMs | Agreed again before starting |
 
 ## Open items carried forward
-- Real single-stranded library for parity testing.
+- Real single-stranded library for parity testing: done for a library without UDG treatment (2026-11-17, CHANGELOG.md); a UDG-treated single-stranded library is still untested.
 - PMDtools UDG-half damage *table* rule (scores already match).
 - eager 2.5.3 `--CpG` for non-UDG libraries: confirm by a run before reporting (your decision).
 - Contact with metaDMG developers (your decision).

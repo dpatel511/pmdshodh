@@ -6,6 +6,13 @@ Changes to the JSON run summary are listed with its `format_version`.
 
 ## [Unreleased]
 
+### Added
+- Real-data check of single-stranded scoring, on library UKY001.B0102 (ENA PRJEB37007, single-stranded and not UDG-treated per its ENA record). Its damage pattern fits that: C→T at both ends (25.5% at the 5′ and 17.7% at the 3′ terminal base of the 1240K BAM), G→A at 1.3% or below. PMDtools 0.60 `--ss` was run under WSL Ubuntu 24.04, and every read was compared.
+  - `score --library ss --pmdtools-compat` against `--printDS --ss`: 0 reads above 1e-6 on the mtDNA BAM (ERR3991018, 281,906 reads, largest difference 6.2e-14) and on the 1240K-capture BAM (ERR3977849, 14,461,790 reads, 8.2e-14).
+  - `filter --library ss --pmdtools-compat --threshold 3` keeps the same reads as `--threshold 3 --ss`, identical including tags: 162,734 and 7,169,568.
+  - In default mode, which scores each C site once, `--threshold 3` keeps 117,380 and 5,327,200 reads. All but 2 of those are also kept by PMDtools, and 1,842,370 reads kept by PMDtools are not. Every read with an informative site scores differently from PMDtools; the reads that score the same have none.
+  - `filter --library ss` output is identical at `-@ 1` and `-@ 8`.
+
 ## [0.2.1] - 2026-11-17
 
 Bug fixes and speed-ups. Two inputs that used to be read silently are now input errors (exit 2): BGZF input that ends without its end-of-file marker (usually a truncated file), and reads with `=` bases when no reference is given with `-r`. Default scores change only for reads with `=` bases scored with `-r`.

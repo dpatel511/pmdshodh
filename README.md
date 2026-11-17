@@ -176,6 +176,7 @@ pmdshodh was built from the published model and black-box testing of PMDtools 0.
 | Single-site score terms (ds and ss, base quality 0–93, 6 parameter sets) | 5,412 | 1.1 × 10⁻¹³ |
 | Synthetic reads with clips, indels and `=`/`X` CIGARs, both strands, 8 modes | 1,500 per mode | 8.3 × 10⁻¹⁴ ¹ |
 | nf-core/eager test BAMs (mammoth mtDNA, human 1240k capture), ds, `--CpG`, `--UDGhalf`, `--ss` | 13,670 per mode | 3.0 × 10⁻¹⁴ ¹ |
+| Real single-stranded library, not UDG-treated (ENA PRJEB37007, UKY001.B0102: mtDNA and 1240k capture), `--ss` | 281,906 and 14,461,790 | 8.2 × 10⁻¹⁴ ¹ |
 | Damage tables vs `pmdtools --deamination --range 30` (no UDG and full UDG) | 1,500 | identical at all 30 positions |
 
 ¹ With `--pmdtools-compat`. Without it, scores differ only where PMDtools has a bug (below).
@@ -228,7 +229,7 @@ The complete list, with reasoning: [docs/design.md](docs/design.md) §5.
 - CRAM input loads whole reference sequences, because noodles decodes against them. With `filter -r -@ 8`, CRAM took 38.7 s (horse) and 58.5 s (human) with peak memory of 1,190 MB and 1,248 MB, against 12.6 s and 14.8 s with 112 MB for the same reads as BAM (median of 5 runs, [docs/benchmarks.md](docs/benchmarks.md)). CRAM input also checks every reference sequence against its checksum ([docs/design.md](docs/design.md) §11).
 - Scores can differ in the last digits between operating systems, because each platform's math library rounds `ln` and `powf` differently. On the test fixture, Windows differed from Linux and macOS by at most 1.8e-15. Only a score this close to a threshold could be filtered differently.
 - Benchmarks cover one laptop and two double-stranded libraries: [docs/benchmarks.md](docs/benchmarks.md). On one thread, `pmdshodh filter` was 32–39× faster than the PMDtools pipeline, and `pmdshodh score` was faster than metaDMG `pmd` in all 10 alternating pairs: 48.8 s against 61.7 s and 60.6 s against 71.9 s (medians).
-- No real single-stranded library has been tested; single-stranded parity rests on synthetic reads.
+- One real single-stranded library has been tested (ENA PRJEB37007, not UDG-treated; CHANGELOG.md). Single-stranded UDG-half and full-UDG scoring rests on synthetic reads.
 - UDG-half damage *tables* do not yet match PMDtools (UDG-half *scores* do).
 
 ## Development

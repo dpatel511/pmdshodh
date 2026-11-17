@@ -142,7 +142,7 @@ To reproduce:
 | `filter -r`, BAM | 51.3 s | 12.6 s | 65.4 s | 14.8 s |
 | `filter -r`, CRAM | 139.6 s | 38.7 s | 201.5 s | 58.5 s |
 
-- **`--library ss` was timed on these double-stranded libraries.** No single-stranded library has been tested; these rows measure speed and thread identity only. BER11_L_NOuser's ss rows ran during the background-load swings (ranges in brackets), so the ss and ds rows can't be compared there. On Motala3 they took about the same time.
+- **`--library ss` was timed on these double-stranded libraries.** This round has no single-stranded library; these rows measure speed and thread identity only (a real single-stranded library was checked separately: CHANGELOG.md, Unreleased). BER11_L_NOuser's ss rows ran during the background-load swings (ranges in brackets), so the ss and ds rows can't be compared there. On Motala3 they took about the same time.
 - **`-r`** looks up every aligned base in the FASTA instead of reading the MD tag. It cost the most with several threads: 7.6 → 12.6 s and 9.8 → 14.8 s at `-@ 8`. The rows ran in different blocks, so the size of the cost is approximate.
 - **CRAM** took 2.7–4.0× as long as the same reads as BAM with `-r`. On top of the `-r` work, it decodes the CRAM and loads whole reference sequences, checking each against the header's `M5`. That check now runs on the thread pool (CHANGELOG.md, 0.2.1); this round has no run without it.
 
@@ -224,4 +224,4 @@ These rounds were not interleaved with this one, so the differences between roun
 - **PMDtools was not rerun for this round.** Its timings and outputs are reused from 2026-11-13 (same laptop, inputs and version). This affects only the speed-up ratios, which compare two sessions.
 - **No PMDtools run with `samtools calmd`.** All inputs already have MD tags. The `-r` rows are compared with pmdshodh's own MD path; the `calmd | pmdtools` comparison of `-r` is in CHANGELOG.md (0.2.0).
 - **`--printDS` and the compat `score` were run once each.** They exist for the parity check.
-- **No single-stranded library.** `--library ss` was timed on double-stranded data, and its scores were not compared with PMDtools here.
+- **No single-stranded library in this round.** `--library ss` was timed on double-stranded data, and its scores were not compared with PMDtools here. A real single-stranded library was checked separately (CHANGELOG.md, Unreleased).
