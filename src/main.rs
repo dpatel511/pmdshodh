@@ -72,10 +72,21 @@ struct DamageArgs {
     #[arg(help_heading = "Output", short, long)]
     output: Option<PathBuf>,
     /// Positions from each read end in the damage table (PMDtools --range).
-    #[arg(help_heading = "Summary", long, default_value_t = 30)]
+    #[arg(
+        help_heading = "Summary",
+        long,
+        default_value_t = 30,
+        allow_negative_numbers = true
+    )]
     range: usize,
     /// Stop after this many input reads (PMDtools -n). Exits normally.
-    #[arg(help_heading = "Input", short = 'n', long, visible_alias = "number")]
+    #[arg(
+        help_heading = "Input",
+        short = 'n',
+        long,
+        visible_alias = "number",
+        allow_negative_numbers = true
+    )]
     max_reads: Option<u64>,
     #[command(flatten)]
     model: ModelArgs,
@@ -92,9 +103,9 @@ struct FilterArgs {
     /// Output file; format from the extension (.bam or .sam). "-" writes BAM to stdout.
     #[arg(help_heading = "Output", short, long)]
     output: PathBuf,
-    /// Output format for stdout ("-o -").
-    #[arg(help_heading = "Output", long, value_enum, default_value = "bam")]
-    output_format: OutputFormat,
+    /// Output format for stdout ("-o -") and devices such as /dev/null [default: bam].
+    #[arg(help_heading = "Output", long, value_enum)]
+    output_format: Option<OutputFormat>,
     /// Keep reads with PMD score >= this (PMDtools -t/--threshold).
     #[arg(
         help_heading = "Filtering",
@@ -216,7 +227,8 @@ struct ModelArgs {
         help_heading = "Scoring model",
         long,
         visible_alias = "PMDpparam",
-        default_value_t = 0.3
+        default_value_t = 0.3,
+        allow_negative_numbers = true
     )]
     pmd_p: f64,
     /// Damage added at every position (PMDtools --PMDconstant).
@@ -224,7 +236,8 @@ struct ModelArgs {
         help_heading = "Scoring model",
         long,
         visible_alias = "PMDconstant",
-        default_value_t = 0.01
+        default_value_t = 0.01,
+        allow_negative_numbers = true
     )]
     pmd_c: f64,
     /// Polymorphism rate in the ancient model (PMDtools --polymorphism_ancient).
@@ -232,7 +245,8 @@ struct ModelArgs {
         help_heading = "Scoring model",
         long,
         visible_alias = "polymorphism_ancient",
-        default_value_t = 0.001
+        default_value_t = 0.001,
+        allow_negative_numbers = true
     )]
     pi_ancient: f64,
     /// Polymorphism rate in the null model (PMDtools --polymorphism_contamination).
@@ -240,7 +254,8 @@ struct ModelArgs {
         help_heading = "Scoring model",
         long,
         visible_alias = "polymorphism_contamination",
-        default_value_t = 0.001
+        default_value_t = 0.001,
+        allow_negative_numbers = true
     )]
     pi_contamination: f64,
     /// Skip reads with mapping quality below this (PMDtools -m).
@@ -249,7 +264,8 @@ struct ModelArgs {
         short = 'm',
         long,
         visible_alias = "requiremapq",
-        default_value_t = 0
+        default_value_t = 0,
+        allow_negative_numbers = true
     )]
     min_mapq: u8,
     /// Ignore bases with base quality below this (PMDtools -q).
@@ -258,7 +274,8 @@ struct ModelArgs {
         short = 'q',
         long,
         visible_alias = "requirebaseq",
-        default_value_t = 0
+        default_value_t = 0,
+        allow_negative_numbers = true
     )]
     min_baseq: u8,
     /// Skip reads with soft or hard clips (PMDtools --noclips).
@@ -274,7 +291,13 @@ struct ModelArgs {
     pmdtools_compat: bool,
     /// Threads to use: at most this many do work at once (reading, scoring, BGZF
     /// compression and writing). Output is identical for any value.
-    #[arg(help_heading = "Performance", short = '@', long, default_value_t = 1)]
+    #[arg(
+        help_heading = "Performance",
+        short = '@',
+        long,
+        default_value_t = 1,
+        allow_negative_numbers = true
+    )]
     threads: usize,
     /// Reference FASTA, indexed with samtools faidx (bgzip also needs its .gzi). Reference bases
     /// come from it instead of MD tags, so reads need no MD tag; MD tags are checked against it.
@@ -294,6 +317,13 @@ impl ModelArgs {
             if !(0.0..=1.0).contains(&v) {
                 return Err(format!("{name} must be between 0 and 1, got {v}"));
             }
+        }
+        // The damage rate is largest at the read end, p + c; above 1 the scores are NaN.
+        if pmdshodh::model::damage(1, self.pmd_p, self.pmd_c) > 1.0 {
+            return Err(format!(
+                "--pmd-p + --pmd-c is the damage rate at the read end and must be at most 1, got {} + {}",
+                self.pmd_p, self.pmd_c
+            ));
         }
         let library = if self.ss {
             Library::SingleStranded
@@ -341,6 +371,9 @@ impl ModelArgs {
 enum Failure {
     Input(String),
     Runtime(String),
+    /// The reader of stdout closed it (`| head`): exit quietly with status 141, as a process
+    /// killed by SIGPIPE does (samtools behaves this way).
+    BrokenPipe,
 }
 
 fn main() -> ExitCode {
@@ -352,6 +385,7 @@ fn main() -> ExitCode {
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
+        Err(Failure::BrokenPipe) => ExitCode::from(141),
         Err(Failure::Input(msg)) => {
             eprintln!("pmdshodh: error: {msg}");
             ExitCode::from(2)
@@ -380,7 +414,12 @@ struct SummaryArgs {
     #[arg(help_heading = "Summary", long)]
     summary: Option<PathBuf>,
     /// Positions from each read end in the damage table (PMDtools --range).
-    #[arg(help_heading = "Summary", long, default_value_t = 30)]
+    #[arg(
+        help_heading = "Summary",
+        long,
+        default_value_t = 30,
+        allow_negative_numbers = true
+    )]
     range: usize,
 }
 
@@ -429,6 +468,11 @@ fn open_alignments(
     let cannot_read = |e: io::Error| Failure::Input(format!("cannot read {}: {e}", path.display()));
     let mut input = io::BufReader::new(open_input(&path.to_path_buf())?);
     let head = input.fill_buf().map_err(cannot_read)?;
+    // No bytes at all is not an alignment file (samtools refuses it too); it usually means an
+    // upstream step failed. A file with only a header is valid input.
+    if head.is_empty() {
+        return Err(Failure::Input(empty_input(path)));
+    }
     let bgzf = head.starts_with(&[0x1f, 0x8b]);
     // BGZF sets FEXTRA (for its block size); plain gzip, as `gzip` writes it, does not.
     if bgzf && head.get(3).is_some_and(|flags| flags & 0x04 == 0) {
@@ -446,11 +490,20 @@ fn open_alignments(
         Box::new(input)
     };
     let magic = source.fill_buf().map_err(cannot_read)?;
+    if magic.is_empty() {
+        return Err(Failure::Input(empty_input(path)));
+    }
     let format = if magic.starts_with(b"CRAM") {
         InputFormat::Cram
     } else if magic.starts_with(b"BAM\x01") {
         InputFormat::Bam
     } else {
+        if let Some(what) = not_sam(magic) {
+            return Err(Failure::Input(format!(
+                "{} is not SAM, BAM or CRAM: {what}",
+                shown(path)
+            )));
+        }
         InputFormat::Sam
     };
     let source: Box<dyn Read + Send> = Box::new(source);
@@ -484,6 +537,72 @@ fn open_alignments(
         check_reference(r, p, &header)?;
     }
     Ok((reader, header, reference, format))
+}
+
+/// The input as the user named it ("-" is standard input).
+fn shown(path: &Path) -> String {
+    if path.as_os_str() == "-" {
+        "standard input".into()
+    } else {
+        path.display().to_string()
+    }
+}
+
+fn empty_input(path: &Path) -> String {
+    format!(
+        "{} is empty (no data): expected SAM, BAM or CRAM",
+        shown(path)
+    )
+}
+
+/// Why the start of an input that is neither BAM nor CRAM cannot be SAM, if it cannot.
+fn not_sam(start: &[u8]) -> Option<&'static str> {
+    let start = &start[..start.len().min(512)];
+    if start
+        .iter()
+        .any(|&b| (b < 0x20 && !matches!(b, b'\t' | b'\n' | b'\r')) || b == 0x7f)
+    {
+        return Some("it is binary data");
+    }
+    match start.first() {
+        Some(b'>') => Some("it looks like FASTA (sequences, not alignments)"),
+        // SAM header lines are @HD, @SQ, @RG, @PG or @CO followed by a tab; FASTQ starts with @name.
+        Some(b'@')
+            if start.len() >= 4
+                && !(matches!(&start[1..3], b"HD" | b"SQ" | b"RG" | b"PG" | b"CO")
+                    && start[3] == b'\t') =>
+        {
+            Some("it looks like FASTQ (reads that are not aligned yet)")
+        }
+        _ => None,
+    }
+}
+
+/// A record names its reference and its mate's by @SQ line; BAM stores the line's index, so a
+/// name the header lacks cannot be written.
+fn check_reference_ids(
+    record: &AlignmentRecord,
+    header: &noodles::sam::Header,
+) -> Result<(), String> {
+    let n = header.reference_sequences().len();
+    for (what, id) in [
+        ("reference", record.reference_sequence_id(header)),
+        (
+            "mate's reference",
+            record.mate_reference_sequence_id(header),
+        ),
+    ] {
+        match id {
+            Some(Ok(i)) if i < n => {}
+            None => {}
+            _ => {
+                return Err(format!(
+                    "its {what} is not in the header (no @SQ line for it)"
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Read every record (or the first `max_reads`), count it in `summary`, and pass scored reads to
@@ -898,10 +1017,20 @@ fn consume_batch(
     Ok(())
 }
 
+/// Largest --range: far beyond ancient DNA read lengths; each position costs memory per table.
+const MAX_RANGE: usize = 1000;
+/// Largest -@: far beyond any node, while still failing fast instead of starting threads for minutes.
+const MAX_THREADS: usize = 1024;
+
 /// The damage table needs at least the terminal position.
 fn check_range(range: usize) -> Result<(), Failure> {
     if range == 0 {
         return Err(Failure::Input("--range must be at least 1".into()));
+    }
+    if range > MAX_RANGE {
+        return Err(Failure::Input(format!(
+            "--range must be at most {MAX_RANGE}, got {range}"
+        )));
     }
     Ok(())
 }
@@ -913,6 +1042,11 @@ fn init_threads(threads: usize) -> Result<(), Failure> {
     if threads == 0 {
         return Err(Failure::Input("--threads must be at least 1".into()));
     }
+    if threads > MAX_THREADS {
+        return Err(Failure::Input(format!(
+            "--threads must be at most {MAX_THREADS}, got {threads}"
+        )));
+    }
     rayon::ThreadPoolBuilder::new()
         .num_threads(threads)
         .build_global()
@@ -923,23 +1057,19 @@ fn command_line() -> String {
     std::env::args().collect::<Vec<_>>().join(" ")
 }
 
-/// Write JSON to a file (atomically) or to stdout (`None` or "-").
-fn write_json(path: Option<&PathBuf>, value: &serde_json::Value) -> Result<(), Failure> {
+/// Write JSON to an output opened before the run, and commit it.
+fn write_json(
+    (output, mut w): (Output, Box<dyn Write + Send>),
+    value: &serde_json::Value,
+) -> Result<(), Failure> {
     let text = serde_json::to_string_pretty(value)
         .map_err(|e| Failure::Runtime(format!("cannot format summary: {e}")))?
         + "\n";
-    match path {
-        Some(p) if p.as_os_str() != "-" => {
-            let (atomic, mut f) = AtomicOutput::create(p)?;
-            f.write_all(text.as_bytes())
-                .map_err(|e| Failure::Runtime(format!("cannot write {}: {e}", p.display())))?;
-            drop(f);
-            atomic.commit()
-        }
-        _ => io::stdout()
-            .write_all(text.as_bytes())
-            .map_err(|e| Failure::Runtime(format!("cannot write output: {e}"))),
-    }
+    let write_err = output.write_err();
+    w.write_all(text.as_bytes()).map_err(&write_err)?;
+    w.flush().map_err(&write_err)?;
+    drop(w);
+    output.commit()
 }
 
 /// Facts shared by the end of every subcommand.
@@ -1002,20 +1132,25 @@ fn run_score(args: &ScoreArgs) -> Result<(), Failure> {
     let (settings, filters) = args.model.settings().map_err(Failure::Input)?;
     check_range(args.summary.range)?;
     init_threads(args.model.threads)?;
+    check_outputs(
+        &args.input,
+        args.model.reference.as_deref(),
+        &[args.output.as_deref(), args.summary.summary.as_deref()],
+    )?;
     let (mut reader, header, mut reference, input_format) =
         open_alignments(&args.input, &args.model)?;
-    // A file appears under its name only if the run succeeds, as for filter.
-    let (atomic, out): (Option<AtomicOutput>, Box<dyn Write + Send>) = match &args.output {
-        Some(path) if path.as_os_str() != "-" => {
-            let (a, f) = AtomicOutput::create(path)?;
-            (Some(a), Box::new(f))
-        }
-        _ => (None, Box::new(io::stdout())),
-    };
+    // Both outputs are created before any record is read, so a bad path fails at once.
+    let (output, out) = Output::open(args.output.as_deref())?;
+    let summary_out = args
+        .summary
+        .summary
+        .as_deref()
+        .map(|p| Output::open(Some(p)))
+        .transpose()?;
     let mut out = BufWriter::new(out);
-    let write_err = |e: io::Error| Failure::Runtime(format!("cannot write output: {e}"));
+    let write_err = output.write_err();
 
-    writeln!(out, "read_name\tflag\tpmds\tn_sites").map_err(write_err)?;
+    writeln!(out, "read_name\tflag\tpmds\tn_sites").map_err(&write_err)?;
     let mut summary = Summary::new(args.summary.range);
     scan(
         &mut reader,
@@ -1032,14 +1167,13 @@ fn run_score(args: &ScoreArgs) -> Result<(), Failure> {
                 .name()
                 .map_or_else(|| "*".to_string(), |n| n.to_string());
             let flag = record.flags().map(u16::from).unwrap_or_default();
-            writeln!(out, "{name}\t{flag}\t{}\t{}", s.pmds, s.n_sites).map_err(write_err)?;
+            writeln!(out, "{name}\t{flag}\t{}\t{}", s.pmds, s.n_sites).map_err(&write_err)?;
             Ok(None)
         },
     )?;
-    out.flush().map_err(write_err)?;
-    if let Some(a) = atomic {
-        a.commit()?;
-    }
+    out.flush().map_err(&write_err)?;
+    drop(out);
+    output.commit()?;
     let fin = Finish {
         subcommand: "score",
         input: &args.input,
@@ -1051,8 +1185,8 @@ fn run_score(args: &ScoreArgs) -> Result<(), Failure> {
         reference: args.model.reference.as_deref(),
     };
     let json = fin.json(&summary);
-    if let Some(p) = &args.summary.summary {
-        write_json(Some(p), &json)?;
+    if let Some(s) = summary_out {
+        write_json(s, &json)?;
     }
     fin.report(&json, &summary, args.quiet);
     Ok(())
@@ -1062,8 +1196,14 @@ fn run_damage(args: &DamageArgs) -> Result<(), Failure> {
     let (settings, filters) = args.model.settings().map_err(Failure::Input)?;
     check_range(args.range)?;
     init_threads(args.model.threads)?;
+    check_outputs(
+        &args.input,
+        args.model.reference.as_deref(),
+        &[args.output.as_deref()],
+    )?;
     let (mut reader, header, mut reference, input_format) =
         open_alignments(&args.input, &args.model)?;
+    let json_out = Output::open(args.output.as_deref())?;
     let mut summary = Summary::new(args.range);
     scan(
         &mut reader,
@@ -1088,7 +1228,7 @@ fn run_damage(args: &DamageArgs) -> Result<(), Failure> {
         reference: args.model.reference.as_deref(),
     };
     let json = fin.json(&summary);
-    write_json(args.output.as_ref(), &json)?;
+    write_json(json_out, &json)?;
     fin.report(&json, &summary, args.quiet);
     Ok(())
 }
@@ -1116,39 +1256,169 @@ fn skip_summary(skipped: &[u64]) -> String {
     }
 }
 
-/// Output file that only appears under its final name if the run succeeds.
-struct AtomicOutput {
-    tmp: PathBuf,
-    dest: PathBuf,
+/// Where a command writes. A regular file, or a path that does not exist yet, is written under a
+/// temporary name and renamed when the run succeeds, so a failed run leaves nothing under the
+/// final name; a symlink is followed and the file it points to is replaced. Anything else that
+/// exists (a FIFO, a device such as /dev/null, /dev/stdout, a process substitution) is written in
+/// place: renaming over it would replace it.
+struct Output {
+    /// The output as the user named it, for messages.
+    shown: String,
+    /// Temporary file and final name, when written by rename.
+    rename: Option<(PathBuf, PathBuf)>,
+    to_stdout: bool,
 }
 
-impl AtomicOutput {
-    fn create(dest: &Path) -> Result<(Self, File), Failure> {
-        let mut name = dest.file_name().unwrap_or_default().to_os_string();
-        name.push(".pmdshodh-tmp");
-        let tmp = dest.with_file_name(name);
-        let file = File::create(&tmp)
-            .map_err(|e| Failure::Runtime(format!("cannot create {}: {e}", tmp.display())))?;
-        Ok((
-            AtomicOutput {
-                tmp,
-                dest: dest.to_path_buf(),
-            },
-            file,
-        ))
+impl Output {
+    /// `None` or "-" is stdout.
+    fn open(path: Option<&Path>) -> Result<(Self, Box<dyn Write + Send>), Failure> {
+        let Some(path) = path.filter(|p| p.as_os_str() != "-") else {
+            let out = Output {
+                shown: "standard output".into(),
+                rename: None,
+                to_stdout: true,
+            };
+            return Ok((out, Box::new(io::stdout())));
+        };
+        let shown = path.display().to_string();
+        let cannot = |e: io::Error| Failure::Runtime(format!("cannot create {shown}: {e}"));
+        let dest = match std::fs::metadata(path) {
+            _ if is_windows_device(path) => None,
+            Ok(m) if m.is_dir() => {
+                return Err(Failure::Input(format!("output {shown} is a directory")));
+            }
+            Ok(m) if m.is_file() => Some(std::fs::canonicalize(path).map_err(cannot)?),
+            Ok(_) => None,
+            // A dangling symlink: creating the file creates its target.
+            Err(_) if path.symlink_metadata().is_ok() => None,
+            Err(_) => Some(path.to_path_buf()),
+        };
+        let (file, rename) = match dest {
+            Some(dest) => {
+                let mut name = dest.file_name().unwrap_or_default().to_os_string();
+                name.push(".pmdshodh-tmp");
+                let tmp = dest.with_file_name(name);
+                (File::create(&tmp).map_err(cannot)?, Some((tmp, dest)))
+            }
+            None => (File::create(path).map_err(cannot)?, None),
+        };
+        let out = Output {
+            shown,
+            rename,
+            to_stdout: false,
+        };
+        Ok((out, Box::new(file)))
     }
 
-    fn commit(self) -> Result<(), Failure> {
-        std::fs::rename(&self.tmp, &self.dest)
-            .map_err(|e| Failure::Runtime(format!("cannot rename to {}: {e}", self.dest.display())))
+    /// Error while writing; a reader that closed stdout ends the run quietly.
+    fn write_err(&self) -> impl Fn(io::Error) -> Failure + Send + Sync + use<> {
+        let (shown, to_stdout) = (self.shown.clone(), self.to_stdout);
+        move |e| {
+            if to_stdout && e.kind() == io::ErrorKind::BrokenPipe {
+                Failure::BrokenPipe
+            } else {
+                Failure::Runtime(format!("cannot write {shown}: {e}"))
+            }
+        }
+    }
+
+    /// Give a renamed output its final name (call after the writer is closed).
+    fn commit(mut self) -> Result<(), Failure> {
+        if let Some((tmp, dest)) = self.rename.take()
+            && let Err(e) = std::fs::rename(&tmp, &dest)
+        {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(Failure::Runtime(format!(
+                "cannot write {}: {e}",
+                self.shown
+            )));
+        }
+        Ok(())
     }
 }
 
-impl Drop for AtomicOutput {
+impl Drop for Output {
     fn drop(&mut self) {
-        // Removes the temporary file if commit() was not reached (no-op after a successful rename).
-        let _ = std::fs::remove_file(&self.tmp);
+        // Removes the temporary file if commit() was not reached.
+        if let Some((tmp, _)) = &self.rename {
+            let _ = std::fs::remove_file(tmp);
+        }
     }
+}
+
+/// An existing output that is not a regular file or directory: a FIFO or a device.
+fn is_special(path: &Path) -> bool {
+    is_windows_device(path) || std::fs::metadata(path).is_ok_and(|m| !m.is_file() && !m.is_dir())
+}
+
+/// Windows device names (NUL, CON, COM1, ...), which have no file metadata; a temporary file
+/// next to one (NUL.pmdshodh-tmp) is the device again, so it cannot be renamed into place.
+fn is_windows_device(path: &Path) -> bool {
+    if !cfg!(windows) {
+        return false;
+    }
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let name = name.to_ascii_uppercase();
+    matches!(name.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (name.len() == 4
+            && (name.starts_with("COM") || name.starts_with("LPT"))
+            && matches!(name.as_bytes()[3], b'1'..=b'9'))
+}
+
+/// Whether two paths name the same existing regular file (also through links or `./`).
+fn same_file(a: &Path, b: &Path) -> bool {
+    let (Ok(ma), Ok(mb)) = (std::fs::metadata(a), std::fs::metadata(b)) else {
+        return false;
+    };
+    if !ma.is_file() || !mb.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        ma.dev() == mb.dev() && ma.ino() == mb.ino()
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::canonicalize(a).ok() == std::fs::canonicalize(b).ok()
+    }
+}
+
+/// Refuse to write over the input or the reference, or two outputs to one file: renaming the
+/// output into place would silently replace the file being read.
+fn check_outputs(
+    input: &Path,
+    reference: Option<&Path>,
+    outputs: &[Option<&Path>],
+) -> Result<(), Failure> {
+    let outputs: Vec<&Path> = outputs
+        .iter()
+        .flatten()
+        .copied()
+        .filter(|p| p.as_os_str() != "-")
+        .collect();
+    for (i, out) in outputs.iter().enumerate() {
+        for (what, other) in [("input", Some(input)), ("reference", reference)] {
+            if other.is_some_and(|o| same_file(out, o)) {
+                return Err(Failure::Input(format!(
+                    "output {} is the {what} file: write to a different file",
+                    out.display()
+                )));
+            }
+        }
+        if outputs[i + 1..]
+            .iter()
+            .any(|later| same_file(out, later) || (out == later && !is_special(out)))
+        {
+            return Err(Failure::Input(format!(
+                "{} is given for two outputs",
+                out.display()
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn run_filter(args: &FilterArgs) -> Result<(), Failure> {
@@ -1157,29 +1427,27 @@ fn run_filter(args: &FilterArgs) -> Result<(), Failure> {
     use noodles::sam::alignment::record::data::field::Tag;
     use noodles::sam::alignment::record_buf::data::field::Value;
     use noodles::sam::header::record::value::{Map, map::program::tag as pg};
-    use noodles_util::alignment::io::Format;
 
     let (settings, filters) = args.model.settings().map_err(Failure::Input)?;
+    for (name, bound) in [
+        ("--threshold", args.threshold),
+        ("--upper-threshold", args.upper_threshold),
+    ] {
+        if bound.is_some_and(|b| !b.is_finite()) {
+            return Err(Failure::Input(format!(
+                "{name} must be a finite number, got {}",
+                bound.unwrap()
+            )));
+        }
+    }
     check_range(args.summary.range)?;
     init_threads(args.model.threads)?;
-    let to_stdout = args.output.as_os_str() == "-";
-    let format = if to_stdout {
-        match args.output_format {
-            OutputFormat::Bam => Format::Bam,
-            OutputFormat::Sam => Format::Sam,
-        }
-    } else {
-        match args.output.extension().and_then(|e| e.to_str()) {
-            Some("bam") => Format::Bam,
-            Some("sam") => Format::Sam,
-            _ => {
-                return Err(Failure::Input(format!(
-                    "cannot tell the output format of {}: use a .bam or .sam extension",
-                    args.output.display()
-                )));
-            }
-        }
-    };
+    let format = output_format(&args.output, args.output_format)?;
+    check_outputs(
+        &args.input,
+        args.model.reference.as_deref(),
+        &[Some(&args.output), args.summary.summary.as_deref()],
+    )?;
 
     let (mut reader, in_header, mut reference, input_format) =
         open_alignments(&args.input, &args.model)?;
@@ -1196,15 +1464,17 @@ fn run_filter(args: &FilterArgs) -> Result<(), Failure> {
         .add("pmdshodh", program)
         .map_err(|e| Failure::Runtime(format!("cannot add @PG line: {e}")))?;
 
-    let (atomic, sink): (Option<AtomicOutput>, Box<dyn Write + Send>) = if to_stdout {
-        (None, Box::new(io::stdout()))
-    } else {
-        let (a, f) = AtomicOutput::create(&args.output)?;
-        (Some(a), Box::new(f))
-    };
+    // Both outputs are created before any record is read, so a bad path fails at once.
+    let (output, sink) = Output::open(Some(&args.output))?;
+    let summary_out = args
+        .summary
+        .summary
+        .as_deref()
+        .map(|p| Output::open(Some(p)))
+        .transpose()?;
     let mut writer = OutWriter::new(format, sink, args.model.threads)?;
-    let write_err = |e: io::Error| Failure::Runtime(format!("cannot write output: {e}"));
-    writer.write_header(&out_header).map_err(write_err)?;
+    let write_err = output.write_err();
+    writer.write_header(&out_header).map_err(&write_err)?;
 
     let tag = match args.tag_name {
         TagName::Pm => Tag::new(b'p', b'm'),
@@ -1229,6 +1499,12 @@ fn run_filter(args: &FilterArgs) -> Result<(), Failure> {
             if !keep {
                 return Ok(Some(false));
             }
+            // score and damage read SAM without a header (`samtools view | ...`); a kept record
+            // can only be written if its references are @SQ lines.
+            check_reference_ids(record, &in_header).map_err(|msg| {
+                let name = record.name().map_or_else(|| "*".into(), |n| n.to_string());
+                Failure::Input(format!("read {name}: {msg}"))
+            })?;
             if args.tag {
                 let mut buf = RecordBuf::try_from_alignment_record(&in_header, record)
                     .map_err(|e| Failure::Input(format!("cannot copy record: {e}")))?;
@@ -1237,19 +1513,18 @@ fn run_filter(args: &FilterArgs) -> Result<(), Failure> {
                     TagName::Ds => Value::String(pmdtools_ds_text(score.pmds).into()),
                 };
                 buf.data_mut().insert(tag, value);
-                writer.write_record(&out_header, &buf).map_err(write_err)?;
+                writer.write_record(&out_header, &buf).map_err(&write_err)?;
             } else {
                 writer
                     .write_record(&out_header, record)
-                    .map_err(write_err)?;
+                    .map_err(&write_err)?;
             }
             Ok(Some(true))
         },
     )?;
-    writer.finish(&out_header).map_err(write_err)?;
-    if let Some(a) = atomic {
-        a.commit()?;
-    }
+    writer.finish(&out_header).map_err(&write_err)?;
+    drop(writer);
+    output.commit()?;
 
     let fin = Finish {
         subcommand: "filter",
@@ -1262,11 +1537,63 @@ fn run_filter(args: &FilterArgs) -> Result<(), Failure> {
         reference: args.model.reference.as_deref(),
     };
     let json = fin.json(&summary);
-    if let Some(p) = &args.summary.summary {
-        write_json(Some(p), &json)?;
+    if let Some(s) = summary_out {
+        write_json(s, &json)?;
     }
     fin.report(&json, &summary, args.quiet);
     Ok(())
+}
+
+/// The format of `filter`'s output: from a .bam or .sam extension (any case). Stdout and devices
+/// such as /dev/null have none, so --output-format decides there, BAM by default.
+fn output_format(
+    path: &Path,
+    flag: Option<OutputFormat>,
+) -> Result<noodles_util::alignment::io::Format, Failure> {
+    use noodles_util::alignment::io::Format;
+    let name = |f: OutputFormat| match f {
+        OutputFormat::Bam => "bam",
+        OutputFormat::Sam => "sam",
+    };
+    let to_stdout = path.as_os_str() == "-";
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    let from_ext = match ext.as_deref() {
+        _ if to_stdout => None,
+        Some("bam") => Some(OutputFormat::Bam),
+        Some("sam") => Some(OutputFormat::Sam),
+        Some("cram") => {
+            return Err(Failure::Input(format!(
+                "cannot write {}: CRAM output is not supported; use .bam or .sam",
+                path.display()
+            )));
+        }
+        _ => None,
+    };
+    let format = match (from_ext, flag) {
+        (Some(e), Some(f)) if e != f => {
+            return Err(Failure::Input(format!(
+                "--output-format {} contradicts the .{} extension of {}",
+                name(f),
+                name(e),
+                path.display()
+            )));
+        }
+        (Some(e), _) => e,
+        (None, f) if to_stdout || is_special(path) => f.unwrap_or(OutputFormat::Bam),
+        (None, _) => {
+            return Err(Failure::Input(format!(
+                "cannot tell the output format of {}: use a .bam or .sam extension",
+                path.display()
+            )));
+        }
+    };
+    Ok(match format {
+        OutputFormat::Bam => Format::Bam,
+        OutputFormat::Sam => Format::Sam,
+    })
 }
 
 /// Alignment output. BAM goes through pmdshodh's BGZF writer, whose bytes do not depend on the

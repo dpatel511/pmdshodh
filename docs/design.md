@@ -73,7 +73,7 @@ pmdshodh damage  [OPTIONS] <INPUT> [-o FILE]      damage summary only (JSON)
 | `--no-indels` | `--noindels` | off | drops reads with I or D |
 | `--skip-flags <list>` | — | none (D2: score all, like PMDtools) | e.g. `secondary,supplementary,duplicate,qcfail` |
 | `-r, --reference <FASTA>` | — | none | reference bases from the FASTA instead of MD; required for CRAM input (§11) |
-| `-@, --threads <N>` | — | 1 | output identical for any N |
+| `-@, --threads <N>` | — | 1 | output identical for any N; at most 1024 |
 | `--summary <FILE>` | — | none | JSON summary (section 6) |
 | `-n, --max-reads <N>` | `-n` | all | `damage` only; stops cleanly, exit 0 |
 | `--quiet` | — | off | suppress routine stderr; errors still printed |
@@ -83,9 +83,9 @@ The null-model background damage (0.001) is fixed and documented, not an option,
 ### 4.2 `filter`
 - `--threshold <F>` (PMDtools `-t/--threshold`): keep reads with PMDS **≥ F**.
 - `--upper-threshold <F>` (`--upperthreshold`): keep reads with PMDS **< F**. Both may be given.
-- `-o <FILE>`: format from extension (`.bam`, `.sam`). `-o -` writes BAM to stdout (`--output-format sam` for SAM). Stdout then carries only the alignment stream (CLAUDE.md §11).
+- `-o <FILE>`: format from the extension (`.bam`, `.sam`, any case). For `-o -` and devices such as `/dev/null`, which have none, `--output-format bam|sam` decides (default BAM); any other path needs the extension. An extension that contradicts `--output-format`, or `.cram`, is an input error. Stdout then carries only the alignment stream (CLAUDE.md §11).
 - `--tag`: add the score tag to kept reads, overwriting an existing tag of that name. The default is **`pm:f`** (agreed 2026-11-11), a 32-bit float, so about 7 significant digits. `--tag-name DS` writes `DS:Z` exactly as PMDtools `--writesamfield` does (Python `str(round(x, 3))`; tested against PMDtools on 483 reads) (D1).
-- Output to a file is written to `<name>.pmdshodh-tmp` and renamed only when the run succeeds, so a failed run leaves no partial file. Output to stdout cannot be withdrawn: if a reader closes the pipe early, pmdshodh reports the write error and exits 1.
+- Output to a regular file (or a new path) is written to `<name>.pmdshodh-tmp` and renamed only when the run succeeds, so a failed run leaves no partial file; a symlink is followed and its target replaced. An existing FIFO or device (`/dev/null`, Windows `NUL`, `/dev/stdout`, `>(...)`) is written in place: renaming over it replaced it (as root, `-o /dev/full` became a regular file; found 2026-11-18). The same applies to `--summary` and `damage -o`, and every output is created before the first record is read. An output that is the input, the reference or another output is an input error. Output to stdout cannot be withdrawn: if a reader closes the pipe early, pmdshodh stops quietly with exit 141.
 - The header is copied from the input, plus one `@PG` line. Kept records are byte-for-byte unchanged except for the optional tag (CLAUDE.md §7).
 - `--header` is accepted and ignored (pmdshodh always writes a header), with a one-line note on stderr unless `--quiet`.
 
@@ -95,12 +95,13 @@ TSV with a header line: `read_name  flag  pmds  n_sites`. Unlike PMDtools `--pri
 - Only scored reads are listed. Skipped reads are counted on stderr (and in the JSON summary from step 5).
 
 ### 4.4 `damage`
-Writes only the summary JSON (section 6). It replaces `pmdtools --deamination --range N`, and `--first` (which crashes in the PMDtools release). `--range N` (default 30).
+Writes only the summary JSON (section 6). It replaces `pmdtools --deamination --range N`, and `--first` (which crashes in the PMDtools release). `--range N` (default 30, at most 1000).
 
 ### 4.5 Exit status
-- 0: success, including empty input.
+- 0: success, including input with only a header.
 - 1: runtime failure (I/O error, write failure, out of memory).
-- 2: invalid options, or invalid input data (e.g. a mapped read without MD, MD that contradicts the CIGAR). The message names the read and the reason.
+- 2: invalid options, or invalid input data (e.g. a mapped read without MD, MD that contradicts the CIGAR, a reference missing from the header, input with no data at all). The message names the read and the reason.
+- 141: the reader of stdout closed it (`| head`); no message, as for a process ended by SIGPIPE (samtools; agreed 2026-11-18).
 
 The numbers are fixed once released.
 
@@ -120,7 +121,8 @@ Default = PMDtools behaviour, except where marked. Every departure gets a regres
 | Secondary, supplementary, duplicate, QC-fail, paired mates | all scored | all scored by default, counted in summary; `--skip-flags` to drop | no (D2) |
 | Existing `DS:Z` tag in input | **crash** unless `--writesamfield` | left untouched; scoring unaffected | **yes**, fixes a crash |
 | `DS:Z:` text inside QUAL (issue #9) | crash | not an issue (field-aware parsing) | **yes**, fixes #9 |
-| Empty or header-only input | **crash**, exit 1 | empty output with header, zero-count summary, exit 0 | **yes** |
+| Header-only input | **crash**, exit 1 | empty output with header, zero-count summary, exit 0 | **yes** |
+| Input with no data at all (0 bytes) | not tested | error, exit 2, as samtools ("fail to read the header"); usually an upstream step failed (agreed 2026-11-18) | — |
 | `--ss` scoring | each C site counted twice (ds term + S1 term): terminal C→T 9.68 at the 5′ end, 6.34 at the 3′ end (Q40) | **one term per site (SI Eq. S1, null background 0.001)**: 4.65 at either end; `--pmdtools-compat` double-counts (agreed 2026-11-13) | **yes** |
 | Reference rebuilt for reads combining `I`/`S` with `D` or `=` (blackbox.md 1.6c) | wrong: deleted bases scored against later read bases, positions shifted | **correct by default**; `--pmdtools-compat` reproduces PMDtools (agreed 2026-11-11) | **yes** |
 | CpG context at the read ends | wraps around (first G of a forward read, last C of a reverse read) | no wrap by default; `--pmdtools-compat` wraps. Kept as default after real data showed it changes 6% of UDG-data scores (blackbox.md §7; agreed 2026-11-11). Must be stated prominently in user docs. | **yes** |

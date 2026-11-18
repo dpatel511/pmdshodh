@@ -13,6 +13,25 @@ Changes to the JSON run summary are listed with its `format_version`.
   - In default mode, which scores each C site once, `--threshold 3` keeps 117,380 and 5,327,200 reads. All but 2 of those are also kept by PMDtools, and 1,842,370 reads kept by PMDtools are not. Every read with an informative site scores differently from PMDtools; the reads that score the same have none.
   - `filter --library ss` output is identical at `-@ 1` and `-@ 8`.
 
+### Changed
+- Input with no data at all (0 bytes, or empty standard input) is an input error (exit 2), as in samtools; it usually means an upstream step failed. Input with only a header is still valid and gives empty output.
+- When the reader of standard output closes it early (`pmdshodh score in.bam | head`), pmdshodh stops without a message and exits 141, as samtools does when SIGPIPE ends it. Before, it printed "cannot write output: Broken pipe" and exited 1.
+- Options are checked before any input is read:
+  - `--pmd-p` + `--pmd-c`, the damage rate at the read end, must be at most 1. Larger values gave NaN scores, which `filter` silently dropped; `--pmd-p 1` with the default `--pmd-c 0.01` did this for 1,081 of 2,912 reads.
+  - `--threshold` and `--upper-threshold` must be finite numbers: `-t nan` used to keep nothing.
+  - `--range` is at most 1000 (`--range 100000000` was killed for lack of memory), and `-@` at most 1024 (`-@ 100000` tried to start threads for 4 minutes, then failed).
+  - A negative value given with a space (`--pmd-p -0.1`) gets the range message instead of "unexpected argument '-0'".
+- `filter` output format: `.BAM` and `.SAM` extensions are accepted in any case. Devices have no extension, so `--output-format` decides there as for stdout, BAM by default: `-o /dev/null --summary run.json` keeps only the summary. `--output-format` that contradicts the extension, and `-o x.cram`, are input errors instead of being ignored or reported as an unknown format.
+- Error messages name the path given, not the temporary file (`out.bam.pmdshodh-tmp`). Input that is not SAM, BAM or CRAM is reported as such ("it looks like FASTQ", "it looks like FASTA", "it is binary data") instead of "invalid header: invalid record" or "record 1: unexpected EOL", and a BAM cut inside a BGZF block says that the file is probably truncated.
+
+### Fixed
+- Output to an existing FIFO or device was renamed over it: `filter -o x.sam` replaced a FIFO named `x.sam` (its reader got nothing), and as root `score -o /dev/full`, `--summary` or `damage -o` to a device replaced the device node with a regular file. A symlink output was replaced by a regular file instead of updating its target (for `score` since 0.2.1, which made `score -o` write by rename; `filter`, `damage` and `--summary` already did this), and `score -o >(...)` failed (since 0.2.1). `-o /dev/stdout` failed for users other than root, and `-o NUL` on Windows failed ("cannot move the file to a different disk drive"). Only regular files are now written under a temporary name and renamed; a symlink is followed, and anything else is written in place.
+- An output that is the input file (also through `./`, and on Linux and macOS through a hard link) replaced the input with exit 0: `filter -t 3 same.bam -o same.bam` left 34 of 2,912 reads. This, the reference as output, and one file given for two outputs (`-o x.bam --summary x.bam`) are now input errors.
+- `--summary` (and `damage -o`) are created before the first record is read. A summary in a missing directory used to fail only after the whole run, with the BAM already written and exit 1.
+- `filter`: a kept read whose reference or mate's reference is not an `@SQ` line of the header is an input error that names the read (exit 2). It used to fail with "cannot write output: invalid reference sequence name" (exit 1). `score` and `damage` do not write records and still read SAM without a header (`samtools view in.bam | pmdshodh score -`).
+- docs/benchmarks.md said 32 checks passed in the 0.2.1 round: `check.py` ran 24 checks, all passed, and printed 8 informational lines.
+- `docs/benchmarks/check.py` fails on a NaN or infinite score; it used to count it as a small difference. No NaN or infinite score was found in any earlier benchmark or parity output.
+
 ## [0.2.1] - 2026-11-17
 
 Bug fixes and speed-ups. Two inputs that used to be read silently are now input errors (exit 2): BGZF input that ends without its end-of-file marker (usually a truncated file), and reads with `=` bases when no reference is given with `-r`. Default scores change only for reads with `=` bases scored with `-r`.

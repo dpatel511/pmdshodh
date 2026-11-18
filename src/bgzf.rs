@@ -76,6 +76,9 @@ fn depth(parallel: bool) -> usize {
     }
 }
 
+/// A frame that ends early: usually a file cut short by a failed copy or download.
+const CUT_SHORT: &str = "BGZF block cut short: the file is probably truncated";
+
 fn invalid(msg: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg)
 }
@@ -156,7 +159,7 @@ fn read_frame(r: &mut impl Read) -> io::Result<Option<Vec<u8>>> {
     while got < HEADER_SIZE {
         match r.read(&mut frame[got..]) {
             Ok(0) if got == 0 => return Ok(None),
-            Ok(0) => return Err(invalid("truncated BGZF block")),
+            Ok(0) => return Err(invalid(CUT_SHORT)),
             Ok(n) => got += n,
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
             Err(e) => return Err(e),
@@ -176,7 +179,7 @@ fn read_frame(r: &mut impl Read) -> io::Result<Option<Vec<u8>>> {
     frame.resize(size, 0);
     r.read_exact(&mut frame[HEADER_SIZE..]).map_err(|e| {
         if e.kind() == io::ErrorKind::UnexpectedEof {
-            invalid("truncated BGZF block")
+            invalid(CUT_SHORT)
         } else {
             e
         }
@@ -352,8 +355,8 @@ mod tests {
                 .map_err(|e| e.to_string())
         };
         assert_eq!(read(&good).unwrap(), b"pmdshodh");
-        assert_eq!(read(&good[..10]).unwrap_err(), "truncated BGZF block");
-        assert_eq!(read(&good[..30]).unwrap_err(), "truncated BGZF block");
+        assert_eq!(read(&good[..10]).unwrap_err(), CUT_SHORT);
+        assert_eq!(read(&good[..30]).unwrap_err(), CUT_SHORT);
         let mut bad = good.clone();
         bad[good.len() - 28 - 8] ^= 1; // CRC of the data block
         assert_eq!(read(&bad).unwrap_err(), "block data checksum mismatch");
