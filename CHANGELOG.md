@@ -6,6 +6,10 @@ Changes to the JSON run summary are listed with its `format_version`.
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-11-18
+
+`filter` no longer adds a second CG tag to reads with more than 65,535 CIGAR operations read from BAM; kept records are written unchanged. Scores are unchanged. This release also records checks on the output of bwa, bowtie2 and samtools against PMDtools 0.60, and documents a `--pmdtools-compat` limitation on `=` read bases.
+
 ### Added
 - Checks on the output of real aligners (WSL Ubuntu 24.04; bwa 0.7.19, bowtie2 2.5.5, samtools 1.25, PMDtools 0.60). 100,000 reads of ENA ERR3991018 (single-stranded, no UDG) were aligned to the rCRS (`MT` of human_g1k_v37), single-end and as fully overlapping pairs.
   - The inputs were:
@@ -138,7 +142,8 @@ First release.
 - `score -o -` writes to stdout; it used to create a file named `-`.
 - `--pmdtools-compat` now also reproduces PMDtools 0.60 for lowercase reference bases in MD (never counted as C or G) and for reverse-strand reads whose MD contains characters PMDtools drops when reverse-complementing (e.g. lowercase `n`). Default scoring is unchanged; both are listed as departures in docs/design.md.
 
-[Unreleased]: https://github.com/dpatel511/pmdshodh/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/dpatel511/pmdshodh/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/dpatel511/pmdshodh/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/dpatel511/pmdshodh/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/dpatel511/pmdshodh/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/dpatel511/pmdshodh/compare/v0.1.0...v0.2.0
