@@ -171,7 +171,7 @@ Peak resident memory (`/usr/bin/time -v`, median of 5; MB = 1024 KiB):
 
 ## Correctness checks
 
-Run on every benchmark input with `check.py`. All 32 checks passed.
+Run on every benchmark input with `check.py`. All 24 checks passed (12 per input; `check.py` also prints 8 informational lines, which are not checks).
 
 | Check | BER11_L_NOuser | Motala3 |
 |---|---|---|

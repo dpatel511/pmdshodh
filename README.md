@@ -118,6 +118,8 @@ PMDtools option names are accepted as aliases (shown in the second column).
 | `--pi-ancient` | `--polymorphism_ancient` | 0.001 |
 | `--pi-contamination` | `--polymorphism_contamination` | 0.001 |
 
+Each is between 0 and 1, and `--pmd-p` + `--pmd-c` (the damage rate at the read end) must be at most 1; larger values would make scores undefined (NaN).
+
 ### Output and performance
 
 | Option | Applies to | Description |
@@ -126,9 +128,9 @@ PMDtools option names are accepted as aliases (shown in the second column).
 | `--upper-threshold X` | `filter` | Keep reads with score < X. |
 | `--tag`, `--tag-name pm\|DS` | `filter` | Add the score to kept reads as `pm:f` (32-bit float, default) or `DS:Z` (3 decimals, as PMDtools `--writesamfield`). |
 | `--summary FILE` | `filter`, `score` | Also write the JSON run summary. |
-| `--range N` | all | Positions from each read end in damage tables (default 30, at least 1). |
+| `--range N` | all | Positions from each read end in damage tables (default 30, from 1 to 1000). |
 | `-n, --max-reads N` | `damage` | Stop after N reads. |
-| `-@, --threads N` | all | Threads (default 1): at most N do work at once, so you can pass your CPU allocation. |
+| `-@, --threads N` | all | Threads (default 1, at most 1024): at most N do work at once, so you can pass your CPU allocation. |
 | `-r, --reference FILE` | all | Indexed reference FASTA (`samtools faidx`; bgzip also needs `.gzi`). Reference bases come from it instead of MD tags, and MD tags are checked against it. Every header sequence must be in it with the same length. |
 | `--pmdtools-compat` | all | Reproduce PMDtools 0.60 exactly, including its bugs. |
 | `--quiet` | all | Suppress the summary line on stderr. |
@@ -140,7 +142,9 @@ PMDtools option names are accepted as aliases (shown in the second column).
 - Kept records are unchanged (identical when decoded) apart from the optional score tag. From CRAM input, records are written as stored in the CRAM: MD and NM tags that htslib left out because it can regenerate them are not added back (see [Limitations](#limitations)).
 - Input order is preserved.
 - The input header is copied, and one `@PG` line records the command.
-- Output files are written under a temporary name and renamed only on success, so a failed run never leaves a partial file.
+- Output files are written under a temporary name and renamed only on success, so a failed run never leaves a partial file. A symlink is followed and the file it points to is replaced. FIFOs and devices (`/dev/null`, `NUL` on Windows, `/dev/stdout`, `>(...)`) are written in place.
+- The output format comes from a `.bam` or `.sam` extension (any case). For stdout and devices, which have none, `--output-format` decides, BAM by default: `-o /dev/null --summary run.json` keeps only the summary.
+- An output may not be the input, the reference or another output (exit 2).
 
 ### JSON run summary
 
@@ -159,9 +163,10 @@ A single file per run, versioned with `format_version` (currently `2`). It conta
 
 | Exit status | Meaning |
 |---|---|
-| `0` | Success, including empty input |
+| `0` | Success, including input with only a header |
 | `1` | Runtime failure, e.g. the output cannot be written |
-| `2` | Invalid options or invalid input, e.g. a mapped read without an MD tag (the read is named in the message) |
+| `2` | Invalid options or invalid input, e.g. a mapped read without an MD tag (the read is named in the message), or an input with no data at all |
+| `141` | The reader of stdout closed it early (e.g. `\| head`): pmdshodh stops without a message, as samtools does when SIGPIPE ends it |
 
 Results go to stdout only when requested (`-o -`, or `score`/`damage` without `-o`). The run summary line and errors go to stderr.
 
@@ -207,7 +212,7 @@ pmdshodh corrects these PMDtools behaviours by default. Use `--pmdtools-compat` 
 | MD string without a `0` after a deletion (as written by MALT) | Misparsed silently | Parsed correctly |
 | Hard-clipped reads | Dropped | Scored |
 | Existing `DS:Z` tag, or `DS:Z:` text in qualities | Crash | Handled |
-| Empty input | Crash | Empty output, exit 0 |
+| Input with only a header | Crash | Empty output, exit 0 |
 | BAM without its end-of-file marker (cut at a block boundary) | `samtools view` warns and passes on the reads before the cut | Error (exit 2), no output file |
 | Damage site ≥ 1,000 bp from a read end, or hundreds of mismatches in one read | Crash | Scored |
 | `--first` (first-base damage rate with standard error) | Crashes in the 0.60 release | Reported in the JSON summary |

@@ -1571,3 +1571,439 @@ fn bam_without_eof_marker_is_an_error() {
     }
     assert!(!out.exists());
 }
+
+// Edge cases found by the CLI audit of 2026-11-18 (CHANGELOG.md).
+
+fn stderr(o: &Output) -> String {
+    String::from_utf8_lossy(&o.stderr).into_owned()
+}
+
+fn s(p: &Path) -> &str {
+    p.to_str().unwrap()
+}
+
+/// The output used to be renamed over the input, replacing it (exit 0): 2,912 reads became 34.
+#[test]
+fn output_equal_to_input_or_another_output_is_rejected() {
+    let dir = tmp_dir("same_file");
+    let input = dir.join("in.sam");
+    fs::copy(data("reads_random.sam"), &input).unwrap();
+    let before = fs::read(&input).unwrap();
+    let dotted = dir.join(".").join("in.sam");
+    for args in [
+        vec!["filter", "-t", "3", s(&input), "-o", s(&input)],
+        vec!["filter", "-t", "3", s(&input), "-o", s(&dotted)],
+        vec!["score", s(&input), "-o", s(&input)],
+        vec!["score", s(&input), "--summary", s(&input)],
+        vec!["damage", s(&input), "-o", s(&input)],
+    ] {
+        let o = run(&args);
+        assert_eq!(o.status.code(), Some(2), "{args:?}");
+        assert!(
+            stderr(&o).contains("is the input file"),
+            "{args:?}: {}",
+            stderr(&o)
+        );
+    }
+    #[cfg(unix)]
+    {
+        let link = dir.join("hard.sam");
+        fs::hard_link(&input, &link).unwrap();
+        let o = run(&["filter", "-t", "3", s(&input), "-o", s(&link)]);
+        assert_eq!(o.status.code(), Some(2), "{}", stderr(&o));
+    }
+    assert_eq!(fs::read(&input).unwrap(), before, "input untouched");
+    let out = dir.join("out.bam");
+    let o = run(&[
+        "filter",
+        "-t",
+        "3",
+        s(&input),
+        "-o",
+        s(&out),
+        "--summary",
+        s(&out),
+    ]);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(
+        stderr(&o).contains("given for two outputs"),
+        "{}",
+        stderr(&o)
+    );
+    assert!(!out.exists());
+}
+
+/// Writing under a temporary name and renaming replaced a symlink output with a regular file
+/// (for score since 0.2.1). The link is now followed: its target is replaced and the link kept.
+#[cfg(unix)]
+#[test]
+fn symlink_output_replaces_its_target_and_keeps_the_link() {
+    let dir = tmp_dir("symlink_output");
+    let input = data("reads_random.sam");
+
+    let real = dir.join("real.tsv");
+    fs::write(&real, "old\n").unwrap();
+    let link = dir.join("link.tsv");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let o = run(&["score", "--quiet", s(&input), "-o", s(&link)]);
+    assert!(o.status.success(), "{}", stderr(&o));
+    assert!(
+        fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert!(
+        fs::read_to_string(&real)
+            .unwrap()
+            .starts_with("read_name\t")
+    );
+}
+
+/// Renaming replaced FIFOs (its reader got nothing) and, as root, devices (/dev/full became a
+/// regular file). An existing non-regular output is now written in place.
+#[cfg(unix)]
+#[test]
+fn fifo_output_is_written_in_place() {
+    use std::os::unix::fs::FileTypeExt;
+    let dir = tmp_dir("fifo_output");
+    let input = data("reads_random.sam");
+    // A FIFO without an extension: written in place, as BAM by default.
+    let fifo = dir.join("pipe");
+    assert!(
+        Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let reader = {
+        let fifo = fifo.clone();
+        std::thread::spawn(move || fs::read(fifo).unwrap())
+    };
+    let o = run(&["filter", "--quiet", "-t", "3", s(&input), "-o", s(&fifo)]);
+    assert!(o.status.success(), "{}", stderr(&o));
+    // Checked before joining: if the FIFO had been replaced, its reader would wait forever.
+    assert!(
+        fs::metadata(&fifo).unwrap().file_type().is_fifo(),
+        "FIFO kept"
+    );
+    let got = reader.join().unwrap();
+    assert!(got.starts_with(&[0x1f, 0x8b]), "BAM through the FIFO");
+    assert!(fs::read_dir(&dir).unwrap().all(|e| {
+        !e.unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains("pmdshodh-tmp")
+    }));
+}
+
+/// Values in range one by one could still make the damage rate at the read end, p + c, exceed 1,
+/// giving NaN scores that filter silently dropped; a NaN threshold kept nothing.
+#[test]
+fn parameters_that_make_scores_undefined_are_rejected() {
+    let input = data("reads_random.sam");
+    let input = s(&input);
+    for args in [
+        vec!["score", "--pmd-p", "0.6", "--pmd-c", "0.5", input],
+        vec!["score", "--pmd-p", "1", input],
+        vec!["filter", "-t", "nan", input, "-o", "x.bam"],
+        vec!["filter", "-t", "-inf", input, "-o", "x.bam"],
+        vec!["filter", "--upper-threshold", "inf", input, "-o", "x.bam"],
+    ] {
+        let o = run(&args);
+        assert_eq!(o.status.code(), Some(2), "{args:?}");
+        assert!(o.stdout.is_empty(), "{args:?}");
+    }
+    let o = run(&["score", "--pmd-p", "0.6", "--pmd-c", "0.5", input]);
+    assert!(
+        stderr(&o).contains("damage rate at the read end"),
+        "{}",
+        stderr(&o)
+    );
+    // At most 1 is fine, and a negative value given with a space gets the range message.
+    let o = run(&[
+        "score", "--quiet", "--pmd-p", "0.5", "--pmd-c", "0.5", input,
+    ]);
+    assert!(o.status.success(), "{}", stderr(&o));
+    assert!(!String::from_utf8_lossy(&o.stdout).contains("NaN"));
+    let o = run(&["score", "--pmd-p", "-0.1", input]);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(stderr(&o).contains("between 0 and 1"), "{}", stderr(&o));
+}
+
+/// --range 100000000 was killed for lack of memory; -@ 100000 tried to start threads for minutes.
+#[test]
+fn range_and_threads_have_upper_limits() {
+    let input = data("reads_random.sam");
+    let input = s(&input);
+    for (args, msg) in [
+        (
+            vec!["score", "--range", "1001", input],
+            "--range must be at most 1000",
+        ),
+        (
+            vec!["damage", "--range", "100000000", input],
+            "--range must be at most 1000",
+        ),
+        (
+            vec!["score", "-@", "1025", input],
+            "--threads must be at most 1024",
+        ),
+    ] {
+        let o = run(&args);
+        assert_eq!(o.status.code(), Some(2), "{args:?}");
+        assert!(stderr(&o).contains(msg), "{args:?}: {}", stderr(&o));
+    }
+    let o = run(&["damage", "--quiet", "--range", "1000", input]);
+    assert!(o.status.success(), "{}", stderr(&o));
+}
+
+/// A bad --summary path used to fail only after the whole run, with the BAM already written.
+#[test]
+fn summary_path_is_created_before_any_read() {
+    let dir = tmp_dir("summary_early");
+    let input = data("reads_random.sam");
+    let out = dir.join("out.bam");
+    let tsv = dir.join("scores.tsv");
+    let bad = Path::new("no").join("such").join("s.json");
+    for args in [
+        vec![
+            "filter",
+            "-t",
+            "3",
+            s(&input),
+            "-o",
+            s(&out),
+            "--summary",
+            s(&bad),
+        ],
+        vec!["score", s(&input), "-o", s(&tsv), "--summary", s(&bad)],
+    ] {
+        let o = run(&args);
+        assert_eq!(o.status.code(), Some(1), "{args:?}");
+        assert!(
+            stderr(&o).contains(&format!("cannot create {}", bad.display())),
+            "{}",
+            stderr(&o)
+        );
+        assert!(
+            !stderr(&o).contains("pmdshodh-tmp"),
+            "error names the user's path"
+        );
+    }
+    assert_eq!(
+        fs::read_dir(&dir).unwrap().count(),
+        0,
+        "no output, no temporary files"
+    );
+}
+
+/// 0 bytes is not an alignment file (samtools refuses it); it used to give exit 0 and an empty BAM.
+#[test]
+fn zero_byte_input_is_an_error() {
+    let dir = tmp_dir("zero_bytes");
+    let empty = dir.join("empty.bam");
+    fs::write(&empty, b"").unwrap();
+    let o = run(&["score", s(&empty)]);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(stderr(&o).contains("is empty"), "{}", stderr(&o));
+    let o = Command::new(BIN)
+        .args(["filter", "-t", "3", "-", "-o", "-"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(2));
+    assert!(
+        stderr(&o).contains("standard input is empty"),
+        "{}",
+        stderr(&o)
+    );
+    assert!(o.stdout.is_empty());
+}
+
+/// filter failed late on a kept read naming a reference the header lacks, as "cannot write output:
+/// invalid reference sequence name" with exit 1. It is now an input error naming the read. score
+/// and damage still read such SAM (`samtools view in.bam | pmdshodh score -`, as with PMDtools).
+#[test]
+fn kept_reads_naming_references_missing_from_the_header_are_input_errors() {
+    let dir = tmp_dir("unknown_reference");
+    let head = "@HD\tVN:1.6\n@SQ\tSN:c\tLN:100\n";
+    let read = |rname: &str, rnext: &str| {
+        format!("r1\t1\t{rname}\t1\t37\t4M\t{rnext}\t1\t0\tTAAC\tIIII\tMD:Z:0C3\n")
+    };
+    for (body, msg) in [
+        (
+            format!("{head}{}", read("x", "*")),
+            "read r1: its reference is not in the header",
+        ),
+        (
+            format!("{head}{}", read("c", "y")),
+            "read r1: its mate's reference is not in the header",
+        ),
+        (
+            read("c", "*"),
+            "read r1: its reference is not in the header",
+        ),
+    ] {
+        let sam = dir.join("in.sam");
+        fs::write(&sam, body).unwrap();
+        let o = run(&["filter", "-t", "-100", s(&sam), "-o", "-"]);
+        assert_eq!(o.status.code(), Some(2));
+        assert!(stderr(&o).contains(msg), "{}", stderr(&o));
+        // Not kept, not written: no error.
+        let o = run(&["filter", "--quiet", "-t", "100", s(&sam), "-o", "-"]);
+        assert!(o.status.success(), "{}", stderr(&o));
+        for args in [
+            vec!["score", "--quiet", s(&sam)],
+            vec!["damage", "--quiet", s(&sam)],
+        ] {
+            let o = run(&args);
+            assert!(o.status.success(), "{args:?}: {}", stderr(&o));
+        }
+    }
+}
+
+/// FASTQ, FASTA and binary data used to be parsed as SAM: "invalid header: invalid record" or
+/// "record 1: unexpected EOL".
+#[test]
+fn input_that_is_not_alignments_is_named() {
+    let dir = tmp_dir("not_alignments");
+    let bytes: Vec<u8> = (0..=255).collect();
+    for (content, msg) in [
+        (b"@r1\nACGT\n+\nIIII\n".to_vec(), "looks like FASTQ"),
+        (b">chr1\nACGT\n".to_vec(), "looks like FASTA"),
+        (bytes, "binary data"),
+    ] {
+        let f = dir.join("in.dat");
+        fs::write(&f, content).unwrap();
+        let o = run(&["score", s(&f)]);
+        assert_eq!(o.status.code(), Some(2));
+        assert!(
+            stderr(&o).contains("is not SAM, BAM or CRAM"),
+            "{}",
+            stderr(&o)
+        );
+        assert!(stderr(&o).contains(msg), "{}", stderr(&o));
+    }
+}
+
+/// A BAM cut inside a BGZF block now says that the file is probably truncated.
+#[test]
+fn bam_cut_inside_a_block_says_it_is_truncated() {
+    let dir = tmp_dir("bam_cut_block");
+    let bam = dir.join("all.bam");
+    let input = data("reads_random.sam");
+    let o = run(&["filter", "--quiet", "-t", "-1000", s(&input), "-o", s(&bam)]);
+    assert!(o.status.success());
+    let bytes = fs::read(&bam).unwrap();
+    let cut = dir.join("cut.bam");
+    fs::write(&cut, &bytes[..bytes.len() / 2]).unwrap();
+    let o = run(&["score", "--quiet", s(&cut), "-o", "-"]);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(stderr(&o).contains("probably truncated"), "{}", stderr(&o));
+}
+
+/// `score | head` printed "cannot write output: Broken pipe" and exited 1. Like samtools (killed
+/// by SIGPIPE), pmdshodh now stops quietly with status 141.
+#[cfg(unix)]
+#[test]
+fn closed_stdout_ends_the_run_quietly_with_status_141() {
+    use std::io::Read;
+    let dir = tmp_dir("broken_pipe");
+    let sam = dir.join("many.sam");
+    many_reads_sam(&sam, 50_000, None, None);
+    for args in [
+        vec!["score", "--quiet", s(&sam)],
+        vec![
+            "filter",
+            "--quiet",
+            "-t",
+            "-100",
+            "-@",
+            "2",
+            "--output-format",
+            "sam",
+            s(&sam),
+            "-o",
+            "-",
+        ],
+        vec![
+            "filter",
+            "--quiet",
+            "-t",
+            "-100",
+            "-@",
+            "2",
+            s(&sam),
+            "-o",
+            "-",
+        ],
+    ] {
+        let mut child = Command::new(BIN)
+            .args(&args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut first = [0u8; 100];
+        child.stdout.take().unwrap().read_exact(&mut first).unwrap();
+        let o = child.wait_with_output().unwrap();
+        assert_eq!(o.status.code(), Some(141), "{args:?}: {}", stderr(&o));
+        assert!(o.stderr.is_empty(), "{args:?}: {}", stderr(&o));
+    }
+}
+
+#[test]
+fn output_format_from_extension_in_any_case() {
+    let dir = tmp_dir("output_format");
+    let input = data("reads_random.sam");
+    let upper = dir.join("out.BAM");
+    let o = run(&["filter", "--quiet", "-t", "3", s(&input), "-o", s(&upper)]);
+    assert!(o.status.success(), "{}", stderr(&o));
+    assert!(fs::read(&upper).unwrap().starts_with(&[0x1f, 0x8b]));
+    for (args, msg) in [
+        (
+            vec!["--output-format", "bam", "-o", "x.sam"],
+            "contradicts the .sam extension",
+        ),
+        (vec!["-o", "x.cram"], "CRAM output is not supported"),
+        (vec!["-o", "x.txt"], "use a .bam or .sam extension"),
+        (
+            vec!["--output-format", "sam", "-o", "x.txt"],
+            "use a .bam or .sam extension",
+        ),
+    ] {
+        let mut full = vec!["filter", "-t", "3", s(&input)];
+        full.extend(args.iter());
+        let o = run(&full);
+        assert_eq!(o.status.code(), Some(2), "{full:?}");
+        assert!(stderr(&o).contains(msg), "{full:?}: {}", stderr(&o));
+    }
+}
+
+/// On Windows, NUL has no file metadata and NUL.pmdshodh-tmp is the device again, so renaming
+/// failed ("cannot move the file to a different disk drive"). Device names are written in place.
+#[cfg(windows)]
+#[test]
+fn windows_device_names_are_written_in_place() {
+    let input = data("reads_random.sam");
+    for args in [
+        vec!["score", "--quiet", s(&input), "-o", "NUL"],
+        vec![
+            "filter",
+            "--quiet",
+            "-t",
+            "3",
+            s(&input),
+            "-o",
+            "nul",
+            "--summary",
+            "NUL",
+        ],
+        vec!["damage", "--quiet", s(&input), "-o", "NUL"],
+    ] {
+        let o = run(&args);
+        assert!(o.status.success(), "{args:?}: {}", stderr(&o));
+    }
+}

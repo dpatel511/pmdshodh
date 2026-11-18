@@ -6,6 +6,7 @@ Exits nonzero if any parity or thread-identity check fails.
 """
 import csv
 import itertools
+import math
 import os
 import statistics
 import subprocess
@@ -74,7 +75,9 @@ def main():
             if x is None or y is None:
                 count_mismatch = True
                 break
-            dlt = abs(float(x) - float(y.split("\t")[2]))
+            a, b = float(x), float(y.split("\t")[2])
+            # A NaN or infinite score fails the check instead of comparing as a small difference.
+            dlt = abs(a - b) if math.isfinite(a) and math.isfinite(b) else math.inf
             n += 1
             maxd = max(maxd, dlt)
             over += dlt > TOL
