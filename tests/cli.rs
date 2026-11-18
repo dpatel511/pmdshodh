@@ -2007,3 +2007,45 @@ fn windows_device_names_are_written_in_place() {
         assert!(o.status.success(), "{args:?}: {}", stderr(&o));
     }
 }
+
+/// BAM stores a CIGAR of more than 65,535 operations in a CG tag. Read from BAM and written as BAM
+/// or SAM, such a record gained a second CG tag (264,008 bytes larger for 66,000 operations), so
+/// samtools showed CG as an ordinary tag (found 2026-11-18). Kept records must be unchanged.
+#[test]
+fn long_cigar_records_keep_a_single_cg_tag() {
+    use std::io::Read;
+    let dir = tmp_dir("long_cigar");
+    let ops = 33_000;
+    let seq: String = "AC".repeat(ops);
+    let sam = dir.join("long.sam");
+    fs::write(
+        &sam,
+        format!(
+            "@HD\tVN:1.6\n@SQ\tSN:c\tLN:100000\nlong\t0\tc\t1\t37\t{}\t*\t0\t0\t{seq}\t{}\tMD:Z:{ops}\n",
+            "1M1I".repeat(ops),
+            "I".repeat(2 * ops)
+        ),
+    )
+    .unwrap();
+    let cg_tags = |bam: &Path| {
+        let mut bytes = Vec::new();
+        noodles::bgzf::io::Reader::new(fs::File::open(bam).unwrap())
+            .read_to_end(&mut bytes)
+            .unwrap();
+        bytes.windows(4).filter(|w| w == b"CGBI").count()
+    };
+    let a = dir.join("a.bam");
+    let o = run(&["filter", "--quiet", "-t", "-1000000", s(&sam), "-o", s(&a)]);
+    assert!(o.status.success(), "{}", stderr(&o));
+    assert_eq!(cg_tags(&a), 1, "SAM to BAM");
+    let (b, c) = (dir.join("b.bam"), dir.join("c.sam"));
+    for out in [&b, &c] {
+        let o = run(&["filter", "--quiet", "-t", "-1000000", s(&a), "-o", s(out)]);
+        assert!(o.status.success(), "{}", stderr(&o));
+    }
+    assert_eq!(cg_tags(&b), 1, "BAM to BAM");
+    let line = fs::read_to_string(&c).unwrap();
+    let line = line.lines().find(|l| l.starts_with("long\t")).unwrap();
+    assert_eq!(line.split('\t').nth(5).unwrap(), "1M1I".repeat(ops));
+    assert!(!line.contains("CG:B"), "BAM to SAM: no CG tag in SAM");
+}

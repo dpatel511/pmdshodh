@@ -1120,7 +1120,8 @@ impl Finish<'_> {
         if summary.md_disagreeing() > 0 {
             eprintln!(
                 "pmdshodh {}: {} scored reads have an MD tag that disagrees with the reference \
-                 (usually stale after realignment); they were scored from the reference",
+                 (written before realignment, or against N bases that the aligner replaced, as \
+                 bwa does); they were scored from the reference",
                 self.subcommand,
                 summary.md_disagreeing()
             );
@@ -1505,14 +1506,22 @@ fn run_filter(args: &FilterArgs) -> Result<(), Failure> {
                 let name = record.name().map_or_else(|| "*".into(), |n| n.to_string());
                 Failure::Input(format!("read {name}: {msg}"))
             })?;
-            if args.tag {
+            // BAM keeps a CIGAR of more than 65,535 operations in a CG tag. Written as read, such
+            // a record got the writer's CG tag besides the one in its data: two CG tags.
+            let long_cigar = record.cigar().len() > usize::from(u16::MAX);
+            if args.tag || long_cigar {
                 let mut buf = RecordBuf::try_from_alignment_record(&in_header, record)
                     .map_err(|e| Failure::Input(format!("cannot copy record: {e}")))?;
-                let value = match args.tag_name {
-                    TagName::Pm => Value::Float(score.pmds as f32),
-                    TagName::Ds => Value::String(pmdtools_ds_text(score.pmds).into()),
-                };
-                buf.data_mut().insert(tag, value);
+                if long_cigar {
+                    buf.data_mut().remove(&Tag::new(b'C', b'G'));
+                }
+                if args.tag {
+                    let value = match args.tag_name {
+                        TagName::Pm => Value::Float(score.pmds as f32),
+                        TagName::Ds => Value::String(pmdtools_ds_text(score.pmds).into()),
+                    };
+                    buf.data_mut().insert(tag, value);
+                }
                 writer.write_record(&out_header, &buf).map_err(&write_err)?;
             } else {
                 writer

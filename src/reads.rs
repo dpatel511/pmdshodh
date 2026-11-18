@@ -63,7 +63,8 @@ pub enum MdCheck {
     Absent,
     /// `-r` given; MD gives the same reference bases.
     Agrees,
-    /// `-r` given; MD is invalid or gives other reference bases (usually stale after realignment).
+    /// `-r` given; MD is invalid or gives other reference bases (written before realignment, or
+    /// against reference N bases that the aligner replaced, as bwa does).
     Disagrees,
 }
 
