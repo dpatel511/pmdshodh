@@ -6,6 +6,10 @@ Changes to the JSON run summary are listed with its `format_version`.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-11-18
+
+Fixes from an edge-case audit of the command line; scores are unchanged. Writing output no longer replaces FIFOs, devices or symlinks, and an output that is the input file is refused instead of overwriting it. Three behaviour changes: input with no data at all is an input error (exit 2); a closed stdout (`| head`) ends the run quietly with exit 141, as in samtools; and `--range` (at most 1000) and `-@` (at most 1024) have upper limits.
+
 ### Added
 - Real-data check of single-stranded scoring, on library UKY001.B0102 (ENA PRJEB37007, single-stranded and not UDG-treated per its ENA record). Its damage pattern fits that: C→T at both ends (25.5% at the 5′ and 17.7% at the 3′ terminal base of the 1240K BAM), G→A at 1.3% or below. PMDtools 0.60 `--ss` was run under WSL Ubuntu 24.04, and every read was compared.
   - `score --library ss --pmdtools-compat` against `--printDS --ss`: 0 reads above 1e-6 on the mtDNA BAM (ERR3991018, 281,906 reads, largest difference 6.2e-14) and on the 1240K-capture BAM (ERR3977849, 14,461,790 reads, 8.2e-14).
@@ -117,7 +121,8 @@ First release.
 - `score -o -` writes to stdout; it used to create a file named `-`.
 - `--pmdtools-compat` now also reproduces PMDtools 0.60 for lowercase reference bases in MD (never counted as C or G) and for reverse-strand reads whose MD contains characters PMDtools drops when reverse-complementing (e.g. lowercase `n`). Default scoring is unchanged; both are listed as departures in docs/design.md.
 
-[Unreleased]: https://github.com/dpatel511/pmdshodh/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/dpatel511/pmdshodh/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/dpatel511/pmdshodh/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/dpatel511/pmdshodh/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/dpatel511/pmdshodh/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/dpatel511/pmdshodh/releases/tag/v0.1.0
