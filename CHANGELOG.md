@@ -6,6 +6,23 @@ Changes to the JSON run summary are listed with its `format_version`.
 
 ## [Unreleased]
 
+### Added
+- Checks on the output of real aligners (WSL Ubuntu 24.04; bwa 0.7.19, bowtie2 2.5.5, samtools 1.25, PMDtools 0.60). 100,000 reads of ENA ERR3991018 (single-stranded, no UDG) were aligned to the rCRS (`MT` of human_g1k_v37), single-end and as fully overlapping pairs.
+  - The inputs were:
+    - `bwa aln` (eager's `-l 1024 -n 0.01`), `bwa mem` (supplementary alignments with hard clips) and `bowtie2` (end-to-end, `--local`, `-k 5`);
+    - then `samtools` sort, merge, markdup (single-end and paired), name-sort, `calmd -e`, and CRAM 3.0 and 3.1;
+    - and 14 crafted reads: a 66,000 bp read with 66,000 CIGAR operations, 1,500 and 5,000 bp reads, IUPAC codes in reads and reference, an N run, a soft-masked region, `X`/`=` and padding CIGARs, clips next to indels, a secondary read without SEQ, and a 1 bp read.
+  - For each input, `score` and `filter` gave the same output at `-@ 1` and `-@ 4`, with no NaN scores, and every output passed `samtools quickcheck`.
+  - `--pmdtools-compat` against PMDtools, on the reads PMDtools scores: 0 reads above 1e-6 and identical kept reads on 17 of the 18 aligner outputs, all but `calmd -e` (up to 199,865 reads each, largest difference 4.2e-14), and on the 7 crafted reads PMDtools can read. PMDtools crashed on the reads over 1,000 bp, a known PMDtools bug (docs/design.md §5).
+  - The `calmd -e` output differs in compat mode; this is documented instead of reproduced (docs/design.md §5).
+  - `-r` against MD: identical scores for bowtie2. For bwa output, about 1% of reads differ (968 of 99,935 single-end), all covering MT:3107. There the rCRS has `N`, which bwa replaces with a random base when indexing, so its MD tags give that base; `-r` does not score the site.
+
+### Changed
+- The stderr note on MD tags that disagree with `-r` names both usual causes: MD written before realignment, or against reference `N` bases that the aligner replaced, as bwa does. It used to say "usually stale after realignment".
+
+### Fixed
+- `filter`: a read with more than 65,535 CIGAR operations, which BAM stores in a CG tag, gained a second CG tag when read from BAM and written as BAM or SAM (264,008 bytes more for 66,000 operations), so samtools showed CG as an ordinary tag. Kept records are now written unchanged. SAM input and `--tag` were not affected.
+
 ## [0.2.2] - 2026-11-18
 
 Fixes from an edge-case audit of the command line; scores are unchanged. Writing output no longer replaces FIFOs, devices or symlinks, and an output that is the input file is refused instead of overwriting it. Three behaviour changes: input with no data at all is an input error (exit 2); a closed stdout (`| head`) ends the run quietly with exit 141, as in samtools; and `--range` (at most 1000) and `-@` (at most 1024) have upper limits.
