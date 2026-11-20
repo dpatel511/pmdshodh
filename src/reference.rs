@@ -14,7 +14,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use noodles::core::{Position, Region};
+use noodles::core::Region;
 use noodles::fasta;
 
 /// Bases per cached block.
@@ -104,13 +104,19 @@ impl Loader {
             .iter()
             .find(|r| AsRef::<[u8]>::as_ref(r.name()) == name)
             .cloned();
-        let bases = match (&mut self.plain, record) {
-            (Some(file), Some(record)) => read_plain(file, &record),
-            _ => self
+        let Some(record) = record else {
+            // Not in the index: noodles' error names the sequence.
+            return self
                 .reader
                 .query(&Region::new(name, ..))
-                .map(|record| record.sequence().as_ref().to_ascii_uppercase()),
-        }?;
+                .map(|record| record.sequence().as_ref().to_ascii_uppercase());
+        };
+        let len = record.length() as usize;
+        let mut bases = match &mut self.plain {
+            Some(file) => read_checked(file, &record, 0, len)?,
+            None => read_checked(self.reader.get_mut(), &record, 0, len)?,
+        };
+        bases.make_ascii_uppercase();
         Ok(bases)
     }
 }
@@ -166,42 +172,83 @@ impl fasta::repository::Adapter for UppercaseAdapter {
     }
 }
 
-/// Read a sequence of an uncompressed FASTA at its index offset in one read, dropping line breaks
-/// and uppercasing in place.
-fn read_plain(file: &mut File, record: &fasta::fai::Record) -> io::Result<Vec<u8>> {
-    use std::io::{Read, Seek, SeekFrom};
-    let len = record.length() as usize;
+/// Read `len` bases of a sequence from 0-based `start`, at the byte offsets its index gives, with
+/// case kept. Every line break must be where the index puts it, and a sequence's first base must
+/// follow its header line; otherwise the FASTA has changed since it was indexed (e.g. rewrapped),
+/// and the bases at those offsets would be the wrong ones.
+fn read_checked<R: io::Read + io::Seek>(
+    reader: &mut R,
+    record: &fasta::fai::Record,
+    start: usize,
+    len: usize,
+) -> io::Result<Vec<u8>> {
+    use std::io::SeekFrom;
+    if len == 0 {
+        return Ok(Vec::new());
+    }
     let (line_bases, line_width) = (
         record.line_base_count().get() as usize,
         record.line_width().get() as usize,
     );
-    let span = if len == 0 {
-        0
-    } else {
-        let last_line = (len - 1) / line_bases;
-        last_line * line_width + (len - last_line * line_bases)
-    };
-    let mut bases = vec![0; span];
-    file.seek(SeekFrom::Start(record.position()))?;
-    file.read_exact(&mut bases)?;
-    let mut kept = 0;
-    for i in 0..span {
-        let b = bases[i];
-        if b != b'\n' && b != b'\r' {
-            bases[kept] = b.to_ascii_uppercase();
-            kept += 1;
-        }
-    }
-    if kept != len {
-        return Err(io::Error::new(
+    let mismatch = || {
+        io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
-                "sequence {} does not have the line lengths its FASTA index gives",
+                "sequence {} does not have the line lengths its FASTA index gives (index it again \
+                 with samtools faidx)",
                 record.name()
             ),
-        ));
+        )
+    };
+    let offset =
+        |i: usize| record.position() + (i / line_bases * line_width + i % line_bases) as u64;
+    let after_header = start == 0 && record.position() > 0;
+    let from = offset(start) - u64::from(after_header);
+    let to = offset(start + len - 1) + 1;
+    reader.seek(SeekFrom::Start(from))?;
+    let mut raw = vec![0; (to - from) as usize];
+    reader.read_exact(&mut raw).map_err(|e| {
+        if e.kind() == io::ErrorKind::UnexpectedEof {
+            mismatch()
+        } else {
+            e
+        }
+    })?;
+    let mut raw = &raw[..];
+    if after_header {
+        if raw[0] != b'\n' {
+            return Err(mismatch());
+        }
+        raw = &raw[1..];
     }
-    bases.truncate(len);
+    // A line at a time: copy its bases, and check that its line ending is all line breaks. If, in
+    // addition, the span has no other line breaks (counted in one pass), there are none among the
+    // bases.
+    let line_break = |b: &u8| *b == b'\n' || *b == b'\r';
+    let breaks = raw.iter().filter(|b| line_break(b)).count();
+    let mut endings = 0;
+    let mut bases = Vec::with_capacity(len);
+    let mut column = start % line_bases;
+    while !raw.is_empty() {
+        let in_bases = column < line_bases;
+        let end = if in_bases { line_bases } else { line_width };
+        let (part, rest) = raw.split_at((end - column).min(raw.len()));
+        if in_bases {
+            bases.extend_from_slice(part);
+        } else if part.iter().all(line_break) {
+            endings += part.len();
+        } else {
+            return Err(mismatch());
+        }
+        column += part.len();
+        if column == line_width {
+            column = 0;
+        }
+        raw = rest;
+    }
+    if breaks != endings {
+        return Err(mismatch());
+    }
     Ok(bases)
 }
 
@@ -370,13 +417,12 @@ impl Reference {
                 let oldest = self.order.pop_front().unwrap();
                 self.blocks.remove(&oldest);
             }
-            let (name, seq_len) = &self.sequences[id];
-            let first = block * BLOCK + 1;
-            let last = ((block + 1) * BLOCK).min(*seq_len);
-            let position = |p: usize| Position::try_from(p).map_err(io::Error::other);
-            let region = Region::new(name.as_str(), position(first)?..=position(last)?);
-            let record = self.reader.query(&region)?;
-            self.blocks.insert(key, record.sequence().as_ref().to_vec());
+            let seq_len = self.sequences[id].1;
+            let first = block * BLOCK;
+            let last = ((block + 1) * BLOCK).min(seq_len);
+            let record = self.reader.index().as_ref()[id].clone();
+            let bases = read_checked(self.reader.get_mut(), &record, first, last - first)?;
+            self.blocks.insert(key, bases);
         }
         self.order.push_back(key);
         Ok(&self.blocks[&key])
@@ -428,6 +474,65 @@ mod tests {
         assert_eq!(out, b"AC");
         assert!(r.fetch("c2", 1, 2, &mut Vec::new()).is_err());
         assert!(r.fetch("c3", 0, 1, &mut Vec::new()).is_err());
+    }
+
+    /// Audit finding B1 (docs/audit-0.3.md §10): a FASTA that no longer matches its index was read
+    /// with wrong bases from the second block on. Rewrapped lines, a changed header line and CRLF
+    /// line ends under an LF index are now errors; a correctly indexed CRLF FASTA still works.
+    #[test]
+    fn fasta_that_does_not_match_its_index_is_an_error() {
+        let dir = std::env::temp_dir().join("pmdshodh_reference_stale");
+        std::fs::create_dir_all(&dir).unwrap();
+        let (path, seq) = fasta(&dir);
+        let fai = std::fs::read(dir.join("ref.fa.fai")).unwrap();
+        let stale = |name: &str, text: &[u8]| {
+            let p = dir.join(name);
+            std::fs::write(&p, text).unwrap();
+            std::fs::write(dir.join(format!("{name}.fai")), &fai).unwrap();
+            p
+        };
+        let wrapped = |width: usize, end: &[u8], header: &[u8]| {
+            let mut text = header.to_vec();
+            text.extend_from_slice(end);
+            for line in seq.chunks(width) {
+                text.extend_from_slice(line);
+                text.extend_from_slice(end);
+            }
+            text.extend_from_slice(b">c2");
+            text.extend_from_slice(end);
+            text.extend_from_slice(b"AC");
+            text.extend_from_slice(end);
+            text
+        };
+        for (name, text) in [
+            ("rewrapped.fa", wrapped(70, b"\n", b">c1 description")),
+            ("header.fa", wrapped(60, b"\n", b">c1 descr")),
+            ("crlf.fa", wrapped(60, b"\r\n", b">c1 description")),
+        ] {
+            let p = stale(name, &text);
+            for (start, len) in [(0, 10), (2 * BLOCK + 100, 23)] {
+                let mut r = Reference::open(&p).unwrap();
+                let e = r.fetch("c1", start, len, &mut Vec::new()).unwrap_err();
+                assert!(
+                    e.to_string()
+                        .contains("does not have the line lengths its FASTA index gives"),
+                    "{name} {start}: {e}"
+                );
+            }
+        }
+        // The original, and a CRLF FASTA indexed as it is, read correctly.
+        let crlf = dir.join("crlf_indexed.fa");
+        std::fs::write(&crlf, wrapped(60, b"\r\n", b">c1 description")).unwrap();
+        let index = fasta::fs::index(&crlf).unwrap();
+        fasta::fai::io::Writer::new(File::create(dir.join("crlf_indexed.fa.fai")).unwrap())
+            .write_index(&index)
+            .unwrap();
+        for p in [&path, &crlf] {
+            let mut r = Reference::open(p).unwrap();
+            let mut out = Vec::new();
+            r.fetch("c1", 2 * BLOCK + 100, 23, &mut out).unwrap();
+            assert_eq!(out, &seq[2 * BLOCK + 100..2 * BLOCK + 123]);
+        }
     }
 
     /// Whole sequences for CRAM come out uppercase and unwrapped, from a plain FASTA (fast path,
