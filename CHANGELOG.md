@@ -6,6 +6,10 @@ Changes to the JSON run summary are listed with its `format_version`.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-20
+
+A new `report` subcommand turns JSON run summaries into an HTML damage report. Scores, filtering and the JSON summary format are unchanged from 0.2.4. The report was checked on the nf-core/eager test BAMs (mammoth mtDNA and human 1240k) and on a real single-stranded library: every plotted number matched the JSON counts (docs/report-proposal.md §9).
+
 ### Added
 - `pmdshodh report run.json [more.json ...] -o report.html`: an HTML damage report from one or more JSON run summaries (`format_version` 1 or 2), without re-reading alignments. Per sample: run settings, read counts, damage by position in percent (5′ C→T; 3′ G→A for ds, C→T for ss) against all other substitutions, the first-base C→T rate, the score histogram with thresholds and the kept fraction, and read lengths. Several summaries add overlay plots. One self-contained file with inline SVG and no JavaScript; byte-identical for the same summaries. Invalid summaries exit with status 2, naming the file and field. Outputs follow the same rules as the other subcommands (written by rename, removed on a signal, never over an input). The JSON summary format is unchanged.
 
@@ -153,7 +157,8 @@ First release.
 - `score -o -` writes to stdout; it used to create a file named `-`.
 - `--pmdtools-compat` now also reproduces PMDtools 0.60 for lowercase reference bases in MD (never counted as C or G) and for reverse-strand reads whose MD contains characters PMDtools drops when reverse-complementing (e.g. lowercase `n`). Default scoring is unchanged; both are listed as departures in docs/design.md.
 
-[Unreleased]: https://github.com/dpatel511/pmdshodh/compare/v0.2.4...HEAD
+[Unreleased]: https://github.com/dpatel511/pmdshodh/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/dpatel511/pmdshodh/compare/v0.2.4...v0.3.0
 [0.2.4]: https://github.com/dpatel511/pmdshodh/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/dpatel511/pmdshodh/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/dpatel511/pmdshodh/compare/v0.2.1...v0.2.2

@@ -170,9 +170,9 @@ Results: 17, 17 and 83 PASS lines, 0 FAIL, with a tolerance of 0.0005 percentage
 
 | # | Kind | What | Status |
 |---|---|---|---|
-| B1 | Bug (layout) | In "All samples", a legend wider than its 440 px chart widened the figure, so the overlay charts stacked into one column instead of two per row. It shows with long labels (5 samples with clashing names). Numbers are unaffected. | To fix: cap each figure at the chart width. |
-| O1 | Observation | The read-length chart shares one count axis for scored and kept reads. When few reads are kept (JK2067: 109 of 12,473), the kept bars are hard to see. | Open: needs a design choice (e.g. a separate kept chart, or percent per series). |
+| B1 | Bug (layout) | In "All samples", a legend wider than its 440 px chart widened the figure, so the overlay charts stacked into one column instead of two per row. It shows with long labels (5 samples with clashing names). Numbers are unaffected. | Fixed in PR #46: figures are capped at the chart width. |
+| O1 | Observation | The read-length chart shares one count axis for scored and kept reads. When few reads are kept (JK2067: 109 of 12,473), the kept bars are hard to see. | Fixed in PR #47: kept reads have their own chart (same x range, own y axis). |
 | O2 | Observation (data) | With `--UDGhalf`, curves beyond position 1 count only CpG sites, so they are noisy on small samples (JK2067). The report's note already says which sites are counted. | No change. |
 | O3 | Observation (data) | JK2067's near-zero terminal damage fits "full UDG" (eager design sheet) rather than "half" (eager README), as already noted in docs/blackbox.md §7. | No change in pmdshodh. |
 
-None of these change a computed number. B1 and any fix for O1 go into 0.3.0, because the report is not released yet.
+None of these change a computed number. The B1 and O1 fixes are in 0.3.0, the report's first release.
