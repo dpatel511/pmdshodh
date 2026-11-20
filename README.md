@@ -173,7 +173,7 @@ A single file per run, versioned with `format_version` (currently `2`). It conta
 - read counts, skipped reads by reason, flag counts and, with `-r`, MD tag agreement;
 - damage by position in percent, positions from 1: 5′ C→T, and 3′ G→A for double-stranded or 3′ C→T for single-stranded libraries, with all other substitutions as a dashed baseline; and the first-base C→T rate with its standard error;
 - the PMD score histogram as a percentage of scored reads, with the thresholds marked and, for `filter`, the fraction of scored reads kept;
-- read lengths of scored (and kept) reads.
+- read lengths of scored reads and, for `filter`, of kept reads in a chart of their own.
 
 With several summaries, an "All samples" section overlays their damage curves and score histograms. Samples are labelled by the input's file name, with the summary's file name added when two would clash. The file uses inline SVG, with no JavaScript, external files or network access, so it opens offline or as an e-mail attachment. The same summaries give a byte-identical report. Plotted values are also in `data-values` attributes, so scripts can check them against the JSON. An unreadable or invalid summary, or an unsupported `format_version`, exits with status 2 and names the file and field.
 
