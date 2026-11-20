@@ -2049,3 +2049,75 @@ fn long_cigar_records_keep_a_single_cg_tag() {
     assert_eq!(line.split('\t').nth(5).unwrap(), "1M1I".repeat(ops));
     assert!(!line.contains("CG:B"), "BAM to SAM: no CG tag in SAM");
 }
+
+/// A run ended by SIGINT, SIGTERM or SIGHUP (Ctrl-C, a scheduler's time limit) left its
+/// `.pmdshodh-tmp` files behind. They are now removed, and the process still ends by the signal.
+#[cfg(unix)]
+#[test]
+fn a_signal_mid_run_removes_temporary_files() {
+    use std::io::Write;
+    use std::os::unix::process::ExitStatusExt;
+    let mut head = String::from("@HD\tVN:1.6\n@SQ\tSN:c\tLN:100000\n");
+    for i in 1..=50 {
+        head.push_str(&format!(
+            "r{i}\t0\tc\t{i}\t37\t4M\t*\t0\t0\tTAAC\tIIII\tMD:Z:0C3\n"
+        ));
+    }
+    for (signal, name) in [(15, "TERM"), (2, "INT"), (1, "HUP")] {
+        let dir = tmp_dir(&format!("signal_{name}"));
+        let out = dir.join("out.bam");
+        let summary = dir.join("run.json");
+        let mut child = Command::new(BIN)
+            .args([
+                "filter",
+                "-t",
+                "3",
+                "-",
+                "-o",
+                s(&out),
+                "--summary",
+                s(&summary),
+            ])
+            .stdin(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        // The header and a few reads, then stdin stays open: the run waits with its outputs open.
+        let mut stdin = child.stdin.take().unwrap();
+        stdin.write_all(head.as_bytes()).unwrap();
+        stdin.flush().unwrap();
+        let temporary = || {
+            fs::read_dir(&dir)
+                .unwrap()
+                .filter(|e| {
+                    e.as_ref()
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .ends_with("pmdshodh-tmp")
+                })
+                .count()
+        };
+        let start = std::time::Instant::now();
+        while temporary() < 2 && start.elapsed().as_secs() < 20 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(temporary(), 2, "both outputs open before the signal");
+        let pid = child.id().to_string();
+        assert!(
+            Command::new("kill")
+                .args([&format!("-{name}"), &pid])
+                .status()
+                .unwrap()
+                .success()
+        );
+        let status = child.wait().unwrap();
+        drop(stdin);
+        assert_eq!(status.signal(), Some(signal), "SIG{name} ends the process");
+        assert_eq!(temporary(), 0, "SIG{name}: temporary files removed");
+        assert!(
+            !out.exists() && !summary.exists(),
+            "SIG{name}: no output under the final names"
+        );
+    }
+}
