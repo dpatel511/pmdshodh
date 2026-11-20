@@ -143,7 +143,10 @@ The rule reproduces **all 1,500** reads' PMDtools scores to ≤ 2.3e-14 (ds mode
 - `--ss` gives the **same table** as the default; the table always uses 5′ C and 3′ G.
 - `--CpG`: a C site's context is the **next read base** (must be G), while a G site's context is the previous **reference** base (C, wrapping at the read start). Scoring uses reference context for both.
 - With these rules pmdshodh `damage --pmdtools-compat` reproduces PMDtools' default and `--CpG` tables on the 1,500-read fixture (30 positions, 5-decimal output).
-- **Open:** the `--UDGhalf` table differs from these rules at positions 1–5 (up to 0.009). Several candidate rules were tried; none matched. Scores in UDG-half mode do match (1.6c).
+- `--UDGhalf`: a C counts at the terminal base or when the next **reference** base is G, as in scoring. This differs from `--CpG`, where the next read base decides. G sites follow the same rule as `--CpG`.
+  - Found 2026-11-20 by single-read probes: a C before a reference G whose read base was A counted in the `--UDGhalf` table but not in the `--CpG` table, at every position and on both strands.
+  - Before, the `--UDGhalf` table differed at positions 1–5 (up to 0.009; 57 of the 1,500 fixture reads), because compat used the `--CpG` rule.
+  - With this rule, `damage --pmdtools-compat --treatment half` matches PMDtools on every fixture read, both read by read and as a whole table (30 positions, 5 decimals). It also matches on the first 200,054 reads of BER11_L_NOuser and 200,012 of Motala3.
 
 ### 1.7 Filtering output (`--threshold`)
 - **Keeps PMDS ≥ threshold** (a read exactly at the threshold passes). `--upperthreshold` keeps PMDS **<** its value.

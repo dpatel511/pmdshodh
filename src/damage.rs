@@ -51,7 +51,8 @@ impl DamageCounts {
     /// Add one read (SAM orientation in; `refs` from the site module).
     /// Sites follow the treatment and base-quality settings used for scoring. CpG context is
     /// taken from the reference; with `pmdtools_compat` it is taken as PMDtools does for its
-    /// table (C: next *read* base is G; G: previous reference base is C, wrapping at the start).
+    /// table (C: next *read* base is G with full UDG, next reference base with UDG-half; G:
+    /// previous reference base is C, wrapping at the start).
     pub fn add_read(
         &mut self,
         seq: &[u8],
@@ -88,7 +89,9 @@ impl DamageCounts {
                 _ => continue,
             };
             let cpg = if ref_index == 0 {
-                if s.pmdtools_compat {
+                // PMDtools' --CpG table takes a C's context from the next read base; its
+                // UDG-half table, like scoring, from the reference (docs/blackbox.md 1.6d).
+                if s.pmdtools_compat && matches!(s.treatment, Treatment::Full) {
                     i + 1 < n && mbase(i + 1) == b'G'
                 } else {
                     i + 1 < n && mref(i + 1) == Some(b'G')

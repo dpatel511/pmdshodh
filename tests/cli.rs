@@ -322,8 +322,13 @@ fn damage_json(args: &[&str]) -> serde_json::Value {
 #[test]
 fn damage_table_matches_pmdtools_deamination() {
     let table = fs::read_to_string(data("reads_random_pmdtools_deamination.tsv")).unwrap();
-    // UDG-half tables are not compared: PMDtools' rule for them is not yet known (docs/blackbox.md 1.6d).
-    for (treatment, flag) in [("none", "--UDGminus"), ("full", "--CpG")] {
+    // UDG-half takes a C's CpG context from the reference, --CpG from the next read base
+    // (docs/blackbox.md 1.6d); UDG-half was not compared until that was found (2026-11-20).
+    for (treatment, flag) in [
+        ("none", "--UDGminus"),
+        ("half", "--UDGhalf"),
+        ("full", "--CpG"),
+    ] {
         let j = damage_json(&["--pmdtools-compat", "--range", "30", flag]);
         let d = &j["damage"];
         let frac = |end: &str, refb: &str, readb: &str, z: usize| {

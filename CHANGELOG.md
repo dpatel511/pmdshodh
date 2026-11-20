@@ -7,6 +7,7 @@ Changes to the JSON run summary are listed with its `format_version`.
 ## [Unreleased]
 
 ### Fixed
+- `--pmdtools-compat` damage tables (`damage`, `--summary`) in UDG-half mode now match PMDtools 0.60 `--deamination --UDGhalf`. PMDtools takes a C site's CpG context from the next reference base there, as in scoring, and only its `--CpG` table uses the next read base. Compat had used the `--CpG` rule, so 57 of 1,500 fixture reads counted differently: the table differed at positions 1–5, by up to 0.009. The tables now agree to PMDtools' 5 decimals on the fixture and on the first 200,054 reads of BER11_L_NOuser and 200,012 of Motala3. Default-mode tables and all scores are unchanged.
 - A run ended by Ctrl-C, SIGTERM (a scheduler's time limit) or SIGHUP left its temporary files (`<output>.pmdshodh-tmp`, and since 0.2.2 one for `--summary` too) behind. They are now removed, and the process still ends by the same signal, so the shell or scheduler sees it as killed (status 130, 143 or 129). On Windows, Ctrl-C or Ctrl-Break removes them and exits with status 130. New dependencies: signal-hook (Linux, macOS) and ctrlc (Windows).
 
 ## [0.2.3] - 2026-11-18

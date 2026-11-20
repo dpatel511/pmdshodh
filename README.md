@@ -183,7 +183,7 @@ pmdshodh was built from the published model and black-box testing of PMDtools 0.
 | Synthetic reads with clips, indels and `=`/`X` CIGARs, both strands, 8 modes | 1,500 per mode | 8.3 × 10⁻¹⁴ ¹ |
 | nf-core/eager test BAMs (mammoth mtDNA, human 1240k capture), ds, `--CpG`, `--UDGhalf`, `--ss` | 13,670 per mode | 3.0 × 10⁻¹⁴ ¹ |
 | Real single-stranded library, not UDG-treated (ENA PRJEB37007, UKY001.B0102: mtDNA and 1240k capture), `--ss` | 281,906 and 14,461,790 | 8.2 × 10⁻¹⁴ ¹ |
-| Damage tables vs `pmdtools --deamination --range 30` (no UDG and full UDG) | 1,500 | identical at all 30 positions |
+| Damage tables vs `pmdtools --deamination --range 30` (no UDG, UDG-half and full UDG) | 1,500 | identical at all 30 positions |
 
 ¹ With `--pmdtools-compat`. Without it, scores differ only where PMDtools has a bug (below).
 
@@ -237,7 +237,6 @@ The complete list, with reasoning: [docs/design.md](docs/design.md) §5.
 - Benchmarks cover one laptop and two double-stranded libraries: [docs/benchmarks.md](docs/benchmarks.md). On one thread, `pmdshodh filter` was 32–39× faster than the PMDtools pipeline, and `pmdshodh score` was faster than metaDMG `pmd` in all 10 alternating pairs: 48.8 s against 61.7 s and 60.6 s against 71.9 s (medians).
 - `--pmdtools-compat` does not reproduce PMDtools on `=` read bases (`samtools calmd -e` output) for reverse-strand reads, which PMDtools scores as if their explicit bases were at the read end, or for reads made only of `=`, which PMDtools drops. Default mode resolves `=` from `-r` ([docs/design.md](docs/design.md) §5).
 - One real single-stranded library has been tested (ENA PRJEB37007, not UDG-treated; CHANGELOG.md). Single-stranded UDG-half and full-UDG scoring rests on synthetic reads.
-- UDG-half damage *tables* do not yet match PMDtools (UDG-half *scores* do).
 
 ## Development
 
