@@ -106,6 +106,12 @@ The run was `cargo llvm-cov --all-targets` (0.9.2, stable 1.99.1, WSL Ubuntu 24.
 - `reference.rs` 113 and 295–299: errors that noodles reports earlier.
 - `main.rs` 1409–1416: a failed rename after a successful write.
 
+**After the group (a) tests (PR #50):** line coverage on WSL is 97.3%, with 122 lines missed (was 161). These items stay open:
+- Reference-cache eviction (more than 64 MiB of reference) and a reference reused across CRAM containers. Both need large inputs, so they move to the real-data matrix (section 7): Motala3 against human_g1k_v37, with `-r` and as CRAM.
+- A CRAM alignment past its reference end: noodles does not write one. It moves to fuzzing (section 6).
+- The FASTA line-length check (`reference.rs` 196–202): see B1.
+- An empty FASTA sequence (`reference.rs` 179) moves to group (b): `samtools faidx` leaves empty sequences out of the index, and SAM requires `LN` ≥ 1.
+
 **(c) Covered on another platform or by unmeasured processes:**
 - `main.rs` 1486–1494: Windows device names (the Windows test runs on Windows only).
 - `main.rs` 1449–1465: the signal handler, which the Unix signal tests exercise in child processes that end by signal.
@@ -218,6 +224,7 @@ Recorded as they are found:
 
 | # | Kind | What | Evidence (test, data, command) | Status |
 |---|---|---|---|---|
+| B1 | Bug | With `-r` and SAM/BAM input, a FASTA whose `.fai` no longer matches its line lengths (rewrapped after indexing) is read silently, giving wrong reference bases from the second 1 MiB block on. The CRAM path checks line lengths and stops with an error; the SAM/BAM path does not. `samtools faidx` also returns wrong bases here, and `samtools calmd` fails reading the whole sequence. | A synthetic 2.5 Mb reference, indexed at 60 columns and rewrapped to 70, with one read at 2,000,001: `score -r` gave 6.55 from 8 sites instead of −1.17 from 22, with exit 0 (2026-11-21). | To fix: check line breaks where the index puts them when a block is loaded, and stop with the same error as CRAM. Regression test in the fix PR. |
 
 Kinds:
 - **B:** wrong output, crash, hang, wrong exit code, or a broken guarantee.
