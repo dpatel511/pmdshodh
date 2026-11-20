@@ -6,6 +6,9 @@ Changes to the JSON run summary are listed with its `format_version`.
 
 ## [Unreleased]
 
+### Fixed
+- A run ended by Ctrl-C, SIGTERM (a scheduler's time limit) or SIGHUP left its temporary files (`<output>.pmdshodh-tmp`, and since 0.2.2 one for `--summary` too) behind. They are now removed, and the process still ends by the same signal, so the shell or scheduler sees it as killed (status 130, 143 or 129). On Windows, Ctrl-C or Ctrl-Break removes them and exits with status 130. New dependencies: signal-hook (Linux, macOS) and ctrlc (Windows).
+
 ## [0.2.3] - 2026-11-18
 
 `filter` no longer adds a second CG tag to reads with more than 65,535 CIGAR operations read from BAM; kept records are written unchanged. Scores are unchanged. This release also records checks on the output of bwa, bowtie2 and samtools against PMDtools 0.60, and documents a `--pmdtools-compat` limitation on `=` read bases.

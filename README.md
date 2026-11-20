@@ -143,6 +143,7 @@ Each is between 0 and 1, and `--pmd-p` + `--pmd-c` (the damage rate at the read 
 - Input order is preserved.
 - The input header is copied, and one `@PG` line records the command.
 - Output files are written under a temporary name and renamed only on success, so a failed run never leaves a partial file. A symlink is followed and the file it points to is replaced. FIFOs and devices (`/dev/null`, `NUL` on Windows, `/dev/stdout`, `>(...)`) are written in place.
+- If Ctrl-C, SIGTERM (e.g. a scheduler's time limit) or SIGHUP ends the run, the temporary files are removed first, and the process still ends by that signal (status 130, 143 or 129).
 - The output format comes from a `.bam` or `.sam` extension (any case). For stdout and devices, which have none, `--output-format` decides, BAM by default: `-o /dev/null --summary run.json` keeps only the summary.
 - An output may not be the input, the reference or another output (exit 2).
 

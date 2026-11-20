@@ -378,6 +378,7 @@ enum Failure {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    clean_up_on_signals();
     let result = match cli.command {
         Command::Filter(args) => run_filter(&args),
         Command::Score(args) => run_score(&args),
@@ -1299,7 +1300,13 @@ impl Output {
                 let mut name = dest.file_name().unwrap_or_default().to_os_string();
                 name.push(".pmdshodh-tmp");
                 let tmp = dest.with_file_name(name);
-                (File::create(&tmp).map_err(cannot)?, Some((tmp, dest)))
+                // Registered before it exists, so a signal at any point can remove it.
+                temporary().push(tmp.clone());
+                let file = File::create(&tmp).map_err(|e| {
+                    forget_temporary(&tmp);
+                    cannot(e)
+                })?;
+                (file, Some((tmp, dest)))
             }
             None => (File::create(path).map_err(cannot)?, None),
         };
@@ -1325,14 +1332,18 @@ impl Output {
 
     /// Give a renamed output its final name (call after the writer is closed).
     fn commit(mut self) -> Result<(), Failure> {
-        if let Some((tmp, dest)) = self.rename.take()
-            && let Err(e) = std::fs::rename(&tmp, &dest)
-        {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(Failure::Runtime(format!(
-                "cannot write {}: {e}",
-                self.shown
-            )));
+        if let Some((tmp, dest)) = self.rename.take() {
+            let renamed = std::fs::rename(&tmp, &dest);
+            if renamed.is_err() {
+                let _ = std::fs::remove_file(&tmp);
+            }
+            forget_temporary(&tmp);
+            if let Err(e) = renamed {
+                return Err(Failure::Runtime(format!(
+                    "cannot write {}: {e}",
+                    self.shown
+                )));
+            }
         }
         Ok(())
     }
@@ -1343,7 +1354,51 @@ impl Drop for Output {
         // Removes the temporary file if commit() was not reached.
         if let Some((tmp, _)) = &self.rename {
             let _ = std::fs::remove_file(tmp);
+            forget_temporary(tmp);
         }
+    }
+}
+
+/// Temporary files of outputs not yet renamed into place, removed if a signal ends the run.
+static TEMPORARY: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+fn temporary() -> std::sync::MutexGuard<'static, Vec<PathBuf>> {
+    TEMPORARY.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn forget_temporary(tmp: &Path) {
+    temporary().retain(|p| p != tmp);
+}
+
+/// On SIGINT, SIGTERM or SIGHUP (Ctrl-C, a scheduler's time limit, a closed terminal), remove
+/// the temporary files and end by the same signal, so the shell or scheduler still sees the
+/// process as killed (status 130, 143 or 129). On Windows, Ctrl-C or Ctrl-Break removes them and
+/// exits with status 130.
+fn clean_up_on_signals() {
+    fn remove_temporary() {
+        for tmp in temporary().iter() {
+            let _ = std::fs::remove_file(tmp);
+        }
+    }
+    #[cfg(unix)]
+    {
+        use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
+        if let Ok(mut signals) = signal_hook::iterator::Signals::new([SIGINT, SIGTERM, SIGHUP]) {
+            std::thread::spawn(move || {
+                if let Some(signal) = signals.forever().next() {
+                    remove_temporary();
+                    let _ = signal_hook::low_level::emulate_default_handler(signal);
+                    std::process::exit(128 + signal);
+                }
+            });
+        }
+    }
+    #[cfg(windows)]
+    {
+        let _ = ctrlc::set_handler(|| {
+            remove_temporary();
+            std::process::exit(130);
+        });
     }
 }
 
