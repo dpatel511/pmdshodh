@@ -6,6 +6,10 @@ Changes to the JSON run summary are listed with its `format_version`.
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-11-20
+
+Two fixes; scores are unchanged. A run ended by Ctrl-C, SIGTERM or SIGHUP now removes its temporary output files, and still ends by that signal (status 130, 143 or 129). With `--pmdtools-compat`, UDG-half damage tables now match PMDtools 0.60, which closes the last known difference in its damage tables. New dependencies: signal-hook (Linux, macOS) and ctrlc (Windows).
+
 ### Fixed
 - `--pmdtools-compat` damage tables (`damage`, `--summary`) in UDG-half mode now match PMDtools 0.60 `--deamination --UDGhalf`. PMDtools takes a C site's CpG context from the next reference base there, as in scoring, and only its `--CpG` table uses the next read base. Compat had used the `--CpG` rule, so 57 of 1,500 fixture reads counted differently: the table differed at positions 1–5, by up to 0.009. The tables now agree to PMDtools' 5 decimals on the fixture and on the first 200,054 reads of BER11_L_NOuser and 200,012 of Motala3. Default-mode tables and all scores are unchanged.
 - A run ended by Ctrl-C, SIGTERM (a scheduler's time limit) or SIGHUP left its temporary files (`<output>.pmdshodh-tmp`, and since 0.2.2 one for `--summary` too) behind. They are now removed, and the process still ends by the same signal, so the shell or scheduler sees it as killed (status 130, 143 or 129). On Windows, Ctrl-C or Ctrl-Break removes them and exits with status 130. New dependencies: signal-hook (Linux, macOS) and ctrlc (Windows).
@@ -146,7 +150,8 @@ First release.
 - `score -o -` writes to stdout; it used to create a file named `-`.
 - `--pmdtools-compat` now also reproduces PMDtools 0.60 for lowercase reference bases in MD (never counted as C or G) and for reverse-strand reads whose MD contains characters PMDtools drops when reverse-complementing (e.g. lowercase `n`). Default scoring is unchanged; both are listed as departures in docs/design.md.
 
-[Unreleased]: https://github.com/dpatel511/pmdshodh/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/dpatel511/pmdshodh/compare/v0.2.4...HEAD
+[0.2.4]: https://github.com/dpatel511/pmdshodh/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/dpatel511/pmdshodh/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/dpatel511/pmdshodh/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/dpatel511/pmdshodh/compare/v0.2.0...v0.2.1
