@@ -1171,7 +1171,7 @@ thead th { background: var(--head); padding-left: 4px; }
 code { font-size: 0.9em; word-break: break-all; }
 .tables { display: flex; flex-wrap: wrap; gap: 0 32px; }
 .charts { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: flex-start; }
-figure { margin: 0; max-width: 100%; }
+figure { margin: 0; max-width: min(100%, 440px); }
 .figure-with-note { max-width: 440px; }
 svg { max-width: 100%; height: auto; font-size: 11px; fill: var(--fg); }
 svg .axis { stroke: var(--muted); } svg .grid { stroke: var(--line); } svg .mark { stroke: var(--fg); stroke-dasharray: 2 2; }
@@ -1518,6 +1518,23 @@ mod tests {
         let html = render(&[parse("e.json", &j).unwrap()]);
         assert!(all_finite(&html));
         assert!(html.contains("n/a"));
+    }
+
+    /// B1 (docs/report-proposal.md §9): a legend wider than its chart widened the figure, so the
+    /// overlay charts stacked in one column. Figures are capped at the chart's width.
+    #[test]
+    fn figures_are_no_wider_than_their_chart() {
+        let html = render(&[sample("ds", 3), sample("ss", 3)]);
+        assert!(
+            html.contains(&format!(
+                "figure {{ margin: 0; max-width: min(100%, {W}px); }}"
+            )),
+            "figure width cap"
+        );
+        assert!(
+            html.contains(&format!("width=\"{W}\"")),
+            "charts are {W} px wide"
+        );
     }
 
     #[test]
