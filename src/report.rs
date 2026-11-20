@@ -1467,6 +1467,34 @@ mod tests {
         assert!(e.contains("new.json") && e.contains("reference"), "{e}");
     }
 
+    /// Audit coverage (docs/audit-0.3.md §3.1): each remaining validation error names its field.
+    #[test]
+    fn more_invalid_fields_are_named() {
+        type Change = fn(&mut Value);
+        let cases: [(&str, Change); 5] = [
+            ("length_histogram.scored", |j| {
+                j["length_histogram"]["scored"] = json!({"long": 3})
+            }),
+            ("tool.name", |j| j["tool"]["name"] = json!("other")),
+            ("damage.range", |j| j["damage"]["range"] = json!(0)),
+            ("score_histogram.bin_width", |j| {
+                j["score_histogram"]["bin_width"] = json!(0.0)
+            }),
+            ("score_histogram.counts", |j| {
+                j["score_histogram"]["counts"] = json!([])
+            }),
+        ];
+        for (field, change) in cases {
+            let mut j = summary("ds", 3);
+            change(&mut j);
+            let e = parse("f.json", &j).unwrap_err();
+            assert!(
+                e.starts_with("f.json: field ") && e.contains(field),
+                "{field}: {e}"
+            );
+        }
+    }
+
     #[test]
     fn bad_summaries_name_the_file_and_field() {
         let mut j = summary("ds", 3);
