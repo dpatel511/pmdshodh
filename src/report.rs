@@ -883,21 +883,32 @@ fn length_chart(s: &Sample) -> String {
             .collect::<Vec<_>>()
             .join(" "),
     };
-    let mut b = vec![bars("scored reads", PALETTE[0], &s.lengths_scored)];
-    if let Some(kept) = &s.lengths_kept {
-        b.push(bars("kept reads", PALETTE[1], kept));
+    // Kept reads get their own chart and y axis (same x range): on the scored axis they can be
+    // too few to see.
+    let one = |title: &str, b: Bars| {
+        chart(&Chart {
+            title,
+            x_label: "Read length (bases)",
+            y_label: "Reads",
+            x,
+            x_ticks: ticks(x.0, x.1, nice_step(x.1 - x.0).max(1.0)),
+            integer_y: true,
+            lines: vec![],
+            bars: vec![b],
+            marks: vec![],
+        })
+    };
+    let scored = bars("scored reads", PALETTE[0], &s.lengths_scored);
+    match &s.lengths_kept {
+        None => one("Read length", scored),
+        Some(kept) => {
+            one("Read length: scored reads", scored)
+                + &one(
+                    "Read length: kept reads",
+                    bars("kept reads", PALETTE[1], kept),
+                )
+        }
     }
-    chart(&Chart {
-        title: "Read length",
-        x_label: "Read length (bases)",
-        y_label: "Reads",
-        x,
-        x_ticks: ticks(x.0, x.1, nice_step(x.1 - x.0).max(1.0)),
-        integer_y: true,
-        lines: vec![],
-        bars: b,
-        marks: vec![],
-    })
 }
 
 fn first_base_text(s: &Sample) -> String {
@@ -1490,6 +1501,37 @@ mod tests {
         j["filters"]["threshold"] = Value::Null;
         let html = render(&[parse("d.json", &j).unwrap()]);
         assert!(!html.contains("Kept"), "no kept row for damage");
+    }
+
+    /// O1 (docs/report-proposal.md §9): on one count axis, kept reads were hard to see when few
+    /// were kept (109 of 12,473). Kept reads get their own chart, same x range, own y axis.
+    #[test]
+    fn kept_read_lengths_have_their_own_chart() {
+        let html = render(&[sample("ds", 3)]);
+        let figure = |series: &str| -> &str {
+            let figs: Vec<&str> = html
+                .split("<figure>")
+                .filter(|f| f.contains(&format!("data-series=\"{series}\"")))
+                .collect();
+            assert_eq!(figs.len(), 1, "{series}: one figure");
+            figs[0]
+        };
+        let (scored, kept) = (figure("scored reads"), figure("kept reads"));
+        assert!(!scored.contains("kept reads") && !kept.contains("scored reads"));
+        assert!(scored.contains(r#"aria-label="Read length: scored reads""#));
+        assert!(kept.contains(r#"aria-label="Read length: kept reads""#));
+        // The one kept bar (4 reads) fills its own axis instead of 4/5 of the scored one.
+        assert!(kept.contains(r#"height="206.00""#), "{kept}");
+        // Same x range: the bar for length 100 starts at the same x in both charts.
+        let x_of_100 = |f: &str| f.split("<rect x=\"").last().unwrap()[..6].to_string();
+        assert_eq!(x_of_100(scored), x_of_100(kept));
+        // Without kept counts (damage, score), one chart named "Read length".
+        let mut j = summary("ds", 3);
+        j["length_histogram"]["kept"] = Value::Null;
+        j["reads"]["kept"] = Value::Null;
+        let one = render(&[parse("d.json", &j).unwrap()]);
+        assert!(one.contains(r#"aria-label="Read length""#));
+        assert!(!one.contains("kept reads"));
     }
 
     #[test]
