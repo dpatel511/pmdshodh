@@ -1,0 +1,131 @@
+# Proposal: HTML damage report (0.3.0, roadmap milestone 5)
+
+Status: **agreed 2026-11-20.** D1–D6 were accepted as recommended (section 6). Implemented on branch `feat/report`, not yet released. The eager test BAM validation (section 7, step 4) is still to do.
+
+## 1. Goal and scope
+
+A per-run QC report, generated from the JSON run summary, that shows whether the damage filter did what it should. Roadmap milestone 5 (docs/roadmap.md):
+- C→T and G→A by position;
+- the PMD score histogram;
+- read counts;
+- the first-base C→T rate.
+
+The milestone is done when the report has been checked on the nf-core/eager test BAMs, with the JSON still the source of truth.
+
+In scope:
+- reading one or more summaries;
+- one self-contained HTML file;
+- plots and tables of what the summary already holds.
+
+Out of scope for 0.3.0:
+- a MultiQC module (milestone 7; it will read the same JSON);
+- fitted damage parameters (milestone 6);
+- new fields in the summary;
+- interactive JavaScript;
+- any general damage profiling beyond the scored reads (roadmap positioning: QC around filtering, not a DamageProfiler competitor).
+
+## 2. Input: what the summary holds today
+
+`format_version` 2 (src/summary.rs `to_json`):
+
+| Field | Used for |
+|---|---|
+| `tool`, `subcommand`, `command`, `input`, `input_format` | report header (provenance) |
+| `mode` (library, treatment, pmdtools_compat), `model` (pmd_p, pmd_c, pi_ancient, pi_contamination, null_background) | header; which damage curve to plot (section 4) |
+| `filters` (threshold, upper_threshold, min_mapq, min_baseq, no_clips, no_indels) | header; threshold lines on the score histogram |
+| `reference` (path, bases_from, md_tags agree/disagree/absent) | header; MD agreement row when `-r` was used |
+| `reads` (input, scored, kept, removed_by_threshold, no_informative_sites, skipped by reason, flags) | read-count table |
+| `score_histogram` (bin_width, min, max, underflow, overflow, counts) | score histogram |
+| `length_histogram` (scored, kept) | read-length plot |
+| `damage` (range, five_prime / three_prime × reference C/G × read base A/C/G/T counts, first_position c_to_t/se/n) | damage plots and the first-base rate |
+
+The tables hold raw counts, so the report computes rates itself (`design.md` §6). `damage` writes the JSON to `-o`; `filter` and `score` write it with `--summary`.
+
+## 3. Interface (proposed)
+
+```bash
+pmdshodh report run.json [more.json ...] -o report.html
+```
+
+- **New subcommand `report`** (D1). It reads existing summaries and never re-reads a BAM. You can report on finished runs, and combine several samples, without rerunning anything.
+- **Several summaries in one report** (D3): one section per sample, plus overlay plots of all samples' damage curves and score histograms. Each sample is labelled by the file name of its `input`. If two labels clash, the summary file's name is added.
+- **Output** follows the same rules as the other outputs:
+  - `-o` is required, and `-o -` writes to stdout;
+  - the file is written by temporary name and renamed on success, and removed on a signal;
+  - an output may not be one of the input summaries.
+- **Exit status:** 2 for an unreadable, invalid or unsupported summary, naming the file and field. 1 for write failures.
+- `--quiet` as elsewhere; there is no other new option.
+
+## 4. Contents per sample
+
+1. **Header:** pmdshodh version, command line, input and its format, reference, library and treatment, compat mode, model parameters, filters and thresholds.
+2. **Read counts:**
+   - input, scored, kept, removed by threshold, no informative sites;
+   - skipped reads by reason;
+   - flag counts;
+   - with `-r`, the MD tags that agree, disagree or are absent.
+3. **Damage by position.** Following DamageProfiler's MultiQC conventions (docs/features.md §4): percent, positions 1…`range`, with 5′ and 3′ panels.
+   - **ds libraries:** 5′ C→T and 3′ G→A.
+   - **ss libraries:** 5′ C→T and 3′ **C→T**. Damage shows as C→T at both ends there, and the summary holds 3′ C counts too. It is shown this way on the real ss library UKY001: 25.5% at the 5′ end, 17.7% at the 3′ end.
+   - **Other substitutions:** a faint background line for the other substitutions, as a baseline for error.
+   - **UDG modes:** a note that the tables count only CpG sites (and the terminal base for half), as in scoring.
+4. **First-base C→T rate,** with its standard error and the number of sites.
+5. **PMD score histogram:**
+   - 0.5-wide bins from −20 to 40, with the counts below and above that range stated;
+   - vertical lines at `--threshold` and `--upper-threshold`;
+   - for `filter`, the fraction of reads kept.
+6. **Read length:** histograms of scored and kept reads (kept only for `filter`).
+
+## 5. How it is built
+
+- **One HTML file with inline SVG**, written by pmdshodh itself.
+  - There is no JavaScript, no external CSS or fonts, and no network access, so it opens on a cluster node or as an e-mail attachment.
+  - It needs no new dependency.
+- **Deterministic:** the same summaries give byte-identical HTML. There is no timestamp, and the version and command line come from the JSON.
+- **PNG** (D2): not in 0.3.0. Rasterising SVG needs a large dependency (e.g. resvg), and HTML covers the use. The roadmap's "(and PNG)" would move to later, or be dropped.
+- **Size:** a few tens of KB per sample.
+
+## 6. Decisions needed (my recommendation first)
+
+| | Question | Recommendation | Alternative |
+|---|---|---|---|
+| D1 | How is a report made? | `pmdshodh report` subcommand only | Also `--report FILE` on `filter`, `score` and `damage` (one step, but a second path to keep stable) |
+| D2 | PNG output in 0.3.0? | No; HTML with inline SVG only | Add PNG with a rasterising dependency |
+| D3 | Several samples per report? | Yes: per-sample sections plus overlays | One report per summary |
+| D4 | Damage axis | Percent, positions from 1 (DamageProfiler and MultiQC convention) | Fractions, positions from 0 (as in the JSON and PMDtools `--deamination`) |
+| D5 | Summary versions accepted | 2, and 1 where the field exists (1 lacks `input_format` and `reference`; shown as "not recorded") | 2 only, with an error naming the version |
+| D6 | ss libraries' 3′ curve | 3′ C→T for ss, 3′ G→A for ds, from `mode.library` | Always G→A (PMDtools' table convention) |
+
+## 7. Plan and checks (after agreement)
+
+1. Branch `feat/report`. Write the CLI, tests and docs to the agreed interface.
+2. **Unit tests:**
+   - rates and percentages from known counts;
+   - SVG coordinates for a small known table;
+   - escaping of file names and command lines in HTML;
+   - ss/ds curve choice.
+3. **CLI tests:**
+   - a report from `damage` on `tests/data/reads_random.sam`;
+   - several summaries in one report;
+   - the same output twice (byte-identical);
+   - an invalid JSON or unknown `format_version` gives exit 2;
+   - an output equal to an input gives exit 2;
+   - `-o -`, a FIFO and the signal cleanup, as for the other outputs.
+4. **Validation (the roadmap's "done when"):**
+   - reports on the nf-core/eager test BAMs (mammoth mtDNA, human 1240k), checked by eye;
+   - every plotted number checked against the JSON by a script.
+   - Also on the ds benchmark libraries and the real ss library, to check the ss curve.
+5. **Docs:** a README section with an example; `design.md`; CHANGELOG. Then release 0.3.0 the same way as the 0.2.x releases.
+
+## 8. Context for the new session
+
+State on 2026-11-20:
+- **Released:** 0.2.4 is on GitHub and PyPI; `main` is at `561bb88`.
+- **Bioconda:** the 0.1.0 recipe (bioconda/bioconda-recipes#71666) is still awaiting review; bump it after it merges.
+- **Known limitation, documented:** `--pmdtools-compat` does not reproduce PMDtools on `=` read bases of reverse-strand reads, or on reads made only of `=` (design.md §5).
+- **Bench machine:** WSL Ubuntu 24.04 at `/root/bench`, with:
+  - PMDtools 0.60 (archive md5 `c059d7ab4c24e1ce00f1eee4c2a4b669`);
+  - samtools 1.25, bwa 0.7.19 and bowtie2 2.5.5 in the `pmdshodh-bench` conda environment;
+  - benchmark BAMs in `data/` and the ss library in `data_ss/`;
+  - the aligner sweep in `sweep/`.
+- This file is untracked. Commit it with the docs PR once D1–D6 are decided.

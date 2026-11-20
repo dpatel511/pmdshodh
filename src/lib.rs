@@ -6,5 +6,6 @@ pub mod damage;
 pub mod model;
 pub mod reads;
 pub mod reference;
+pub mod report;
 pub mod sites;
 pub mod summary;

@@ -888,6 +888,7 @@ fn subcommand_help_groups_options_and_shows_examples() {
                 "Performance:",
             ][..],
         ),
+        ("report", &["Output:"][..]),
     ] {
         let o = run(&[cmd, "--help"]);
         assert!(o.status.success() && o.stderr.is_empty());
@@ -906,7 +907,8 @@ fn help_examples_run() {
     let dir = tmp_dir("help_examples");
     let input = data("reads_random.sam");
     let mut ran = 0;
-    for cmd in ["filter", "score", "damage"] {
+    // report last: its examples read the summaries written by the filter and damage examples.
+    for cmd in ["filter", "score", "damage", "report"] {
         let help = String::from_utf8(run(&[cmd, "--help"]).stdout).unwrap();
         let examples = help.split("\nExamples:\n").nth(1).unwrap();
         for line in examples.lines().map(str::trim) {
@@ -917,7 +919,11 @@ fn help_examples_run() {
                 .split_whitespace()
                 .map(|a| match a {
                     "in.bam" => input.to_str().unwrap().to_string(),
-                    a if a.ends_with(".bam") || a.ends_with(".json") || a.ends_with(".tsv") => {
+                    a if a.ends_with(".bam")
+                        || a.ends_with(".json")
+                        || a.ends_with(".tsv")
+                        || a.ends_with(".html") =>
+                    {
                         dir.join(a).to_str().unwrap().to_string()
                     }
                     a => a.to_string(),
@@ -933,7 +939,7 @@ fn help_examples_run() {
             ran += 1;
         }
     }
-    assert_eq!(ran, 6, "two runnable examples per command");
+    assert_eq!(ran, 8, "two runnable examples per command");
 }
 
 /// A synthetic reference (one 2,000-base contig, indexed) and SAM reads aligned to it with damage-like
@@ -2125,4 +2131,222 @@ fn a_signal_mid_run_removes_temporary_files() {
             "SIG{name}: no output under the final names"
         );
     }
+}
+
+/// Write `damage` summaries of the test reads: one per (file name, extra arguments).
+fn damage_summaries(dir: &Path, runs: &[(&str, &[&str])]) -> Vec<PathBuf> {
+    let input = data("reads_random.sam");
+    runs.iter()
+        .map(|(name, extra)| {
+            let out = dir.join(name);
+            let mut args = vec!["damage", "--quiet"];
+            args.extend_from_slice(extra);
+            args.extend([s(&input), "-o", s(&out)]);
+            let o = run(&args);
+            assert!(o.status.success(), "{}", stderr(&o));
+            out
+        })
+        .collect()
+}
+
+/// Values of `data-series="name"` in the report, as numbers (`None` for a gap, "n/a").
+fn plotted(html: &str, series: &str) -> Vec<Option<f64>> {
+    let key = format!("data-series=\"{series}\" data-values=\"");
+    let start = html.find(&key).unwrap_or_else(|| panic!("no {series}")) + key.len();
+    let end = start + html[start..].find('"').unwrap();
+    html[start..end]
+        .split(' ')
+        .map(|v| v.parse().ok())
+        .collect()
+}
+
+#[test]
+fn report_from_a_damage_summary_plots_its_rates() {
+    let dir = tmp_dir("report_one");
+    let json_path = &damage_summaries(&dir, &[("run.json", &[])])[0];
+    let html_path = dir.join("report.html");
+    let o = run(&["report", s(json_path), "-o", s(&html_path)]);
+    assert!(o.status.success(), "{}", stderr(&o));
+    let html = fs::read_to_string(&html_path).unwrap();
+    assert!(html.starts_with("<!DOCTYPE html>"));
+    assert!(html.contains("reads_random.sam"));
+    assert!(!html.contains("<script") && !html.contains("http"));
+    // Every plotted damage rate equals the rate from the JSON counts (3 decimals of a percent).
+    let j: serde_json::Value = serde_json::from_slice(&fs::read(json_path).unwrap()).unwrap();
+    let range = j["damage"]["range"].as_u64().unwrap() as usize;
+    for (series, end, refb, readb) in [
+        ("5′ C→T", "five_prime", "C", "T"),
+        ("3′ G→A", "three_prime", "G", "A"),
+    ] {
+        let t = &j["damage"][end][refb];
+        let got = plotted(&html, series);
+        assert_eq!(got.len(), range, "{series}");
+        for (i, g) in got.iter().enumerate() {
+            let n: u64 = ["A", "C", "G", "T"]
+                .iter()
+                .map(|b| t[b][i].as_u64().unwrap())
+                .sum();
+            let want = 100.0 * t[readb][i].as_u64().unwrap() as f64 / n as f64;
+            assert!((g.unwrap() - want).abs() <= 0.0005, "{series} {i}");
+        }
+    }
+    // The first-base rate in the JSON is the first plotted 5′ point, and is shown.
+    let first = j["damage"]["first_position"]["c_to_t"].as_f64().unwrap();
+    assert!((plotted(&html, "5′ C→T")[0].unwrap() - 100.0 * first).abs() <= 0.0005);
+    assert!(html.contains(&format!("{:.2}%", 100.0 * first)));
+}
+
+#[test]
+fn report_on_several_summaries_overlays_them_and_is_reproducible() {
+    let dir = tmp_dir("report_many");
+    let inputs = damage_summaries(&dir, &[("ds.json", &[]), ("ss.json", &["--ss"])]);
+    let out = |name: &str| {
+        let p = dir.join(name);
+        let o = run(&["report", s(&inputs[0]), s(&inputs[1]), "-o", s(&p)]);
+        assert!(o.status.success(), "{}", stderr(&o));
+        fs::read(p).unwrap()
+    };
+    let (a, b) = (out("a.html"), out("b.html"));
+    assert_eq!(a, b, "byte-identical");
+    let html = String::from_utf8(a).unwrap();
+    assert!(html.contains("id=\"overlays\""));
+    assert!(html.contains("reads_random.sam (ds.json)"));
+    assert!(html.contains("reads_random.sam (ss.json)"));
+    assert!(html.contains("3′ C→T"), "ss sample shows 3′ C→T");
+}
+
+#[test]
+fn report_dash_output_writes_html_to_stdout_only() {
+    let dir = tmp_dir("report_stdout");
+    let json_path = &damage_summaries(&dir, &[("run.json", &[])])[0];
+    let o = run(&["report", s(json_path), "-o", "-"]);
+    assert!(o.status.success(), "{}", stderr(&o));
+    assert!(o.stdout.starts_with(b"<!DOCTYPE html>"));
+    assert!(!stderr(&o).contains('<'));
+    let q = run(&["report", "--quiet", s(json_path), "-o", "-"]);
+    assert!(q.status.success() && q.stderr.is_empty());
+}
+
+#[test]
+fn report_rejects_bad_summaries_with_status_2_and_writes_nothing() {
+    let dir = tmp_dir("report_bad");
+    let good = &damage_summaries(&dir, &[("run.json", &[])])[0];
+    let mut j: serde_json::Value = serde_json::from_slice(&fs::read(good).unwrap()).unwrap();
+    j["format_version"] = serde_json::json!(99);
+    let future = dir.join("future.json");
+    fs::write(&future, j.to_string()).unwrap();
+    let broken = dir.join("broken.json");
+    fs::write(&broken, "{\"format_version\": 2,").unwrap();
+    let missing = dir.join("missing.json");
+    let out = dir.join("report.html");
+    for (bad, says) in [
+        (&future, "format_version"),
+        (&broken, "broken.json"),
+        (&missing, "missing.json"),
+    ] {
+        let o = run(&["report", s(good), s(bad), "-o", s(&out)]);
+        assert_eq!(o.status.code(), Some(2), "{}", stderr(&o));
+        assert!(stderr(&o).contains(says), "{}", stderr(&o));
+        assert!(!out.exists(), "no output");
+        assert!(fs::read_dir(&dir).unwrap().all(|e| {
+            !e.unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains("pmdshodh-tmp")
+        }));
+    }
+    // Output over an input, or one summary twice.
+    let before = fs::read(good).unwrap();
+    let o = run(&["report", s(good), "-o", s(good)]);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(stderr(&o).contains("is the input file"), "{}", stderr(&o));
+    assert_eq!(fs::read(good).unwrap(), before);
+    let o = run(&["report", s(good), s(good), "-o", s(&out)]);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(stderr(&o).contains("given twice"), "{}", stderr(&o));
+    // No summary, or no -o: usage errors.
+    assert_eq!(run(&["report", "-o", s(&out)]).status.code(), Some(2));
+    assert_eq!(run(&["report", s(good)]).status.code(), Some(2));
+}
+
+#[cfg(unix)]
+#[test]
+fn report_fifo_output_and_signal_cleanup() {
+    use std::io::Write;
+    use std::os::unix::fs::FileTypeExt;
+    use std::os::unix::process::ExitStatusExt;
+    let dir = tmp_dir("report_fifo");
+    let good = damage_summaries(&dir, &[("run.json", &[])]).remove(0);
+    let mkfifo = |p: &Path| {
+        assert!(Command::new("mkfifo").arg(p).status().unwrap().success());
+    };
+    // FIFO output is written in place.
+    let fifo = dir.join("pipe");
+    mkfifo(&fifo);
+    let reader = {
+        let fifo = fifo.clone();
+        std::thread::spawn(move || fs::read(fifo).unwrap())
+    };
+    let o = run(&["report", "--quiet", s(&good), "-o", s(&fifo)]);
+    assert!(o.status.success(), "{}", stderr(&o));
+    assert!(fs::metadata(&fifo).unwrap().file_type().is_fifo());
+    assert!(reader.join().unwrap().starts_with(b"<!DOCTYPE html>"));
+    // A signal while a summary is still being read removes the temporary output.
+    let slow = dir.join("slow.json");
+    mkfifo(&slow);
+    let out = dir.join("report.html");
+    let mut child = Command::new(BIN)
+        .args(["report", s(&good), s(&slow), "-o", s(&out)])
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut writer = fs::OpenOptions::new().write(true).open(&slow).unwrap();
+    writer.write_all(b"{").unwrap();
+    let tmp = dir.join("report.html.pmdshodh-tmp");
+    let start = std::time::Instant::now();
+    while !tmp.exists() && start.elapsed().as_secs() < 20 {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(tmp.exists(), "output open before the summaries are read");
+    assert!(
+        Command::new("kill")
+            .args(["-TERM", &child.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let status = child.wait().unwrap();
+    drop(writer);
+    assert_eq!(status.signal(), Some(15));
+    assert!(!tmp.exists() && !out.exists());
+}
+
+/// With -r, the report shows how many MD tags agreed with the reference, as in the summary.
+#[test]
+fn report_shows_md_tag_agreement_with_reference() {
+    let dir = tmp_dir("report_md");
+    let (fasta, sam) = reference_and_reads(&dir);
+    let json_path = dir.join("run.json");
+    let o = run(&[
+        "damage",
+        "--quiet",
+        "-r",
+        s(&fasta),
+        s(&sam),
+        "-o",
+        s(&json_path),
+    ]);
+    assert!(o.status.success(), "{}", stderr(&o));
+    let j: serde_json::Value = serde_json::from_slice(&fs::read(&json_path).unwrap()).unwrap();
+    let md = &j["reference"]["md_tags"];
+    let html_path = dir.join("report.html");
+    let o = run(&["report", "--quiet", s(&json_path), "-o", s(&html_path)]);
+    assert!(o.status.success(), "{}", stderr(&o));
+    let html = fs::read_to_string(&html_path).unwrap();
+    let want = format!(
+        "{} agree, {} disagree, {} absent",
+        md["agree"], md["disagree"], md["absent"]
+    );
+    assert!(html.contains(&want), "{want}");
+    assert!(md["agree"].as_u64().unwrap() > 0, "fixture has MD tags");
 }

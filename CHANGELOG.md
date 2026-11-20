@@ -6,6 +6,9 @@ Changes to the JSON run summary are listed with its `format_version`.
 
 ## [Unreleased]
 
+### Added
+- `pmdshodh report run.json [more.json ...] -o report.html`: an HTML damage report from one or more JSON run summaries (`format_version` 1 or 2), without re-reading alignments. Per sample: run settings, read counts, damage by position in percent (5′ C→T; 3′ G→A for ds, C→T for ss) against all other substitutions, the first-base C→T rate, the score histogram with thresholds and the kept fraction, and read lengths. Several summaries add overlay plots. One self-contained file with inline SVG and no JavaScript; byte-identical for the same summaries. Invalid summaries exit with status 2, naming the file and field. Outputs follow the same rules as the other subcommands (written by rename, removed on a signal, never over an input). The JSON summary format is unchanged.
+
 ## [0.2.4] - 2026-11-20
 
 Two fixes; scores are unchanged. A run ended by Ctrl-C, SIGTERM or SIGHUP now removes its temporary output files, and still ends by that signal (status 130, 143 or 129). With `--pmdtools-compat`, UDG-half damage tables now match PMDtools 0.60, which closes the last known difference in its damage tables. New dependencies: signal-hook (Linux, macOS) and ctrlc (Windows).
