@@ -34,6 +34,9 @@ enum Command {
     /// Write the JSON run summary only: read counts, score histogram and damage table.
     #[command(after_help = DAMAGE_EXAMPLES)]
     Damage(DamageArgs),
+    /// Write an HTML damage report from one or more JSON run summaries.
+    #[command(after_help = REPORT_EXAMPLES)]
+    Report(ReportArgs),
 }
 
 const FILTER_EXAMPLES: &str = "\
@@ -63,6 +66,26 @@ Examples:
 
   # Only the first 100,000 reads (PMDtools -n)
   pmdshodh damage -n 100000 in.bam -o damage.json";
+
+const REPORT_EXAMPLES: &str = "Examples:
+  # One sample, from a summary written by damage -o, filter --summary or score --summary
+  pmdshodh report run.json -o report.html
+
+  # Several samples in one report, with their damage curves and score histograms overlaid
+  pmdshodh report run.json damage.json -o report.html";
+
+#[derive(Args)]
+struct ReportArgs {
+    /// JSON run summaries (from damage -o, filter --summary or score --summary).
+    #[arg(required = true)]
+    summaries: Vec<PathBuf>,
+    /// Output HTML file ("-" for stdout).
+    #[arg(help_heading = "Output", short, long)]
+    output: PathBuf,
+    /// Do not print the one-line note to stderr.
+    #[arg(long)]
+    quiet: bool,
+}
 
 #[derive(Args)]
 struct DamageArgs {
@@ -383,6 +406,7 @@ fn main() -> ExitCode {
         Command::Filter(args) => run_filter(&args),
         Command::Score(args) => run_score(&args),
         Command::Damage(args) => run_damage(&args),
+        Command::Report(args) => run_report(&args),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -1232,6 +1256,53 @@ fn run_damage(args: &DamageArgs) -> Result<(), Failure> {
     let json = fin.json(&summary);
     write_json(json_out, &json)?;
     fin.report(&json, &summary, args.quiet);
+    Ok(())
+}
+
+/// The report reads only the summaries, never alignments. The output is opened first, as for
+/// the other subcommands, so a failed or interrupted run leaves nothing under its name.
+fn run_report(args: &ReportArgs) -> Result<(), Failure> {
+    for (i, path) in args.summaries.iter().enumerate() {
+        if args.summaries[..i]
+            .iter()
+            .any(|earlier| earlier == path || same_file(earlier, path))
+        {
+            return Err(Failure::Input(format!("{} is given twice", path.display())));
+        }
+        check_outputs(path, None, &[Some(&args.output)])?;
+    }
+    let (output, mut w) = Output::open(Some(&args.output))?;
+    let mut samples = Vec::new();
+    for path in &args.summaries {
+        let shown = path.display().to_string();
+        let text =
+            std::fs::read(path).map_err(|e| Failure::Input(format!("cannot read {shown}: {e}")))?;
+        let json: serde_json::Value = serde_json::from_slice(&text)
+            .map_err(|e| Failure::Input(format!("{shown} is not valid JSON: {e}")))?;
+        samples.push(pmdshodh::report::parse(&shown, &json).map_err(Failure::Input)?);
+    }
+    let names: Vec<(&str, &str)> = samples
+        .iter()
+        .map(|s| (s.source.as_str(), s.input.as_str()))
+        .collect();
+    let labels = pmdshodh::report::labels(&names);
+    for (s, label) in samples.iter_mut().zip(labels) {
+        s.label = label;
+    }
+    let html = pmdshodh::report::render(&samples);
+    let shown = output.shown.clone();
+    let write_err = output.write_err();
+    w.write_all(html.as_bytes()).map_err(&write_err)?;
+    w.flush().map_err(&write_err)?;
+    drop(w);
+    output.commit()?;
+    if !args.quiet {
+        eprintln!(
+            "pmdshodh report: {} sample{} written to {shown}",
+            samples.len(),
+            if samples.len() == 1 { "" } else { "s" }
+        );
+    }
     Ok(())
 }
 

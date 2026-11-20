@@ -97,6 +97,9 @@ TSV with a header line: `read_name  flag  pmds  n_sites`. Unlike PMDtools `--pri
 ### 4.4 `damage`
 Writes only the summary JSON (section 6). It replaces `pmdtools --deamination --range N`, and `--first` (which crashes in the PMDtools release). `--range N` (default 30, at most 1000).
 
+### 4.4a `report` (added for 0.3.0; docs/report-proposal.md, D1–D6 agreed 2026-11-20)
+`pmdshodh report <SUMMARY>... -o <FILE>` writes one HTML file from one or more JSON run summaries and never reads alignments. It accepts `format_version` 1 and 2, and shows fields that version 1 lacks (`input_format`, `reference`) as "not recorded". `-o` is required (`-o -` is stdout), and follows the output rules in §4.2: written by rename, removed on a signal, and never one of the summaries. A summary given twice is an input error. Damage is plotted in percent with positions from 1. The 3′ curve is G→A for ds and C→T for ss, from `mode.library`. The page is inline SVG with no JavaScript and no timestamp, so the same summaries give the same bytes. It has no PNG output. Code: `src/report.rs` (pure: summaries in, HTML out), wired in `main.rs`.
+
 ### 4.5 Exit status
 - 0: success, including input with only a header.
 - 1: runtime failure (I/O error, write failure, out of memory).

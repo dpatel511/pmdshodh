@@ -32,6 +32,7 @@ pmdshodh implements this score as a single program, with no `samtools calmd | py
 - **Direct SAM/BAM/CRAM input, SAM/BAM output.** Kept records are written unchanged and in input order, with an `@PG` header line. CRAM is decoded with the reference given by `-r`.
 - **Multi-threaded** scoring and BGZF compression. Results are identical for any thread count.
 - **JSON run summary** with read counts, a score histogram and damage tables, designed for MultiQC.
+- **HTML damage report** from one or more run summaries: damage by position, score and length histograms, read counts. One self-contained file with no JavaScript or network access.
 - **Robust input handling.** It never drops reads silently: every skipped read is counted by reason, and invalid input stops with a clear error.
 - **Correct by default, exact on request.** Known PMDtools bugs are fixed, and `--pmdtools-compat` reproduces PMDtools exactly for comparisons.
 
@@ -73,6 +74,9 @@ pmdshodh score sample.bam -o sample.scores.tsv
 # Damage summary only
 pmdshodh damage sample.bam -o sample.damage.json
 
+# HTML report from one or more run summaries
+pmdshodh report sample.damage.json other.damage.json -o damage-report.html
+
 # CRAM input (needs its reference); writes BAM
 pmdshodh filter --threshold 3 -r ref.fa sample.cram -o sample.pmd3.bam
 ```
@@ -84,6 +88,7 @@ pmdshodh filter --threshold 3 -r ref.fa sample.cram -o sample.pmd3.bam
 | `filter` | Keep reads by PMD score | SAM or BAM, chosen by the `-o` extension (`-o -` writes BAM to stdout) |
 | `score` | Score every read | Tab-separated table: `read_name`, `flag`, `pmds`, `n_sites` |
 | `damage` | Summarise damage without filtering | JSON run summary |
+| `report` | Report on run summaries (never re-reads alignments) | One HTML file (`-o -` writes it to stdout) |
 
 `filter` keeps reads with score **≥ `--threshold`** and/or **< `--upper-threshold`**; at least one is required.
 
@@ -159,6 +164,18 @@ A single file per run, versioned with `format_version` (currently `2`). It conta
 | `reads` | Input, scored, kept and removed counts; skipped reads by reason; flag counts (duplicate, secondary, supplementary, …) |
 | `score_histogram`, `length_histogram` | Score distribution (0.5-wide bins from −20 to 40), read lengths |
 | `damage` | Counts of read bases A/C/G/T at reference C and G, by position from each molecule end; first-base C→T rate with standard error |
+
+### HTML damage report (`report`)
+
+`pmdshodh report run.json [more.json ...] -o report.html` reads summaries written by `damage -o`, `filter --summary` or `score --summary` (`format_version` 1 or 2; fields missing from version 1 are shown as "not recorded"). The JSON stays the source of truth: the report computes rates from its counts and adds nothing new. Per sample, it shows:
+
+- the run: input, reference, command line, library, treatment, model parameters and thresholds;
+- read counts, skipped reads by reason, flag counts and, with `-r`, MD tag agreement;
+- damage by position in percent, positions from 1: 5′ C→T, and 3′ G→A for double-stranded or 3′ C→T for single-stranded libraries, with all other substitutions as a dashed baseline; and the first-base C→T rate with its standard error;
+- the PMD score histogram as a percentage of scored reads, with the thresholds marked and, for `filter`, the fraction of scored reads kept;
+- read lengths of scored (and kept) reads.
+
+With several summaries, an "All samples" section overlays their damage curves and score histograms. Samples are labelled by the input's file name, with the summary's file name added when two would clash. The file uses inline SVG, with no JavaScript, external files or network access, so it opens offline or as an e-mail attachment. The same summaries give a byte-identical report. Plotted values are also in `data-values` attributes, so scripts can check them against the JSON. An unreadable or invalid summary, or an unsupported `format_version`, exits with status 2 and names the file and field.
 
 ### Exit status and streams
 
