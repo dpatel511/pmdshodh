@@ -45,7 +45,70 @@ Findings are documented first. Fixes follow in separate PRs, each with a regress
   - (a) missing test → add it in section 4;
   - (b) unreachable or defensive → note why;
   - (c) platform-only (Windows or Unix branches) → note which CI job covers it.
-- Output: a table in section 10 per source file (`main.rs`, `sites.rs`, `model.rs`, `reads.rs`, `damage.rs`, `summary.rs`, `report.rs`, `cram.rs`, `bgzf.rs`, `reference.rs`), with numbers before and after.
+- Output: a table per source file (`main.rs`, `sites.rs`, `model.rs`, `reads.rs`, `damage.rs`, `summary.rs`, `report.rs`, `cram.rs`, `bgzf.rs`, `reference.rs`), with numbers before and after.
+
+### 3.1 Results on `main` at `e136268` (2026-11-20)
+
+The run was `cargo llvm-cov --all-targets` (0.9.2, stable 1.99.1, WSL Ubuntu 24.04) over all 106 tests. The counts are lines and regions; branch coverage needs nightly and was not measured. The child processes in the signal tests end by signal, so they write no coverage data.
+
+| File | Lines | Missed lines | Regions | Missed regions |
+|---|---|---|---|---|
+| bgzf.rs | 93.4% | 17 | 93.1% | 32 |
+| cram.rs | 94.9% | 9 | 90.9% | 33 |
+| damage.rs | 99.3% | 1 | 99.6% | 1 |
+| main.rs | 94.8% | 59 | 92.0% | 147 |
+| model.rs | 100% | 0 | 100% | 0 |
+| reads.rs | 85.4% | 24 | 86.6% | 34 |
+| reference.rs | 93.6% | 23 | 94.1% | 42 |
+| report.rs | 98.4% | 19 | 95.1% | 113 |
+| sites.rs | 98.6% | 8 | 98.3% | 16 |
+| summary.rs | 99.5% | 1 | 99.6% | 1 |
+| **Total** | **96.4%** | **161** | **94.6%** | **419** |
+
+**(a) Missing tests: these become the test list.**
+- **Read filters and skip reasons** (`reads.rs` 151–195). No test uses `--min-mapq`, `--no-clips` or `--no-indels`, or a record with an `N` or `P` CIGAR, `*` SEQ or `*` QUAL. No test has a QUAL length that differs from SEQ, or an MD tag that is not a string. Only the unmapped skip reason is tested. The aligner sweep (CHANGELOG 0.2.3) exercised some of these by hand, but the suite does not.
+- **Full UDG from the command line** (`main.rs` 369). `--treatment full`, `--UDGplus` and `--CpG` are never run as a command; full UDG is tested only through library unit tests.
+- **`=` and `X` CIGAR ops** (`sites.rs` 123–124), where they extend the reference span.
+- **Malformed MD tags** (`sites.rs` 351, 364, 368, 373): an invalid character, and deletions that disagree between CIGAR and MD.
+- **Reference checks:**
+  - a header sequence missing from the FASTA (`main.rs` 962);
+  - an empty FASTA sequence (`reference.rs` 179);
+  - FASTA line lengths that differ from the `.fai` index (`reference.rs` 196–202);
+  - more references than the block cache holds, so blocks are evicted (`reference.rs` 370);
+  - a reference sequence reused across CRAM containers (`reference.rs` 292);
+  - a CRAM alignment past its reference end (`cram.rs` 164).
+- **Damaged BGZF:**
+  - a block size below the header (`bgzf.rs` 177);
+  - an ISIZE over 64 KiB (195);
+  - bad deflate data (206);
+  - a BGZF file holding only the EOF block (`main.rs` 519);
+  - output of incompressible or very large records (`bgzf.rs` 278, 299).
+- **Command line:**
+  - `--threads 0` (`main.rs` 1068);
+  - an input error in `damage` (1245);
+  - the stderr line listing skip reasons (1328);
+  - an output path that is a directory (1361);
+  - a write failure to a file (1399; `/dev/full` as non-root on Linux).
+- **Report validation** (`report.rs` 176, 195, 223, 244, 248):
+  - a non-numeric read-length key;
+  - `tool.name` other than pmdshodh;
+  - `damage.range` 0;
+  - a bin width of 0;
+  - empty histogram counts.
+
+**(b) Defensive, not reachable from the command line (no test needed; reasons recorded):**
+- `sites.rs` 110 and 154: unsupported CIGAR ops, which `reads.rs` already skips.
+- `damage.rs` 125: `--range` is at least 1.
+- `main.rs` 1020: FLAG is always 16 bits after decoding.
+- `report.rs` 398 and 591: the y range is never empty, and an empty length chart returns earlier.
+- `bgzf.rs` 53, 60 and 244: worker channels close only if a worker thread panics.
+- `bgzf.rs` 164–165 and 184: interrupted and non-EOF read errors.
+- `reference.rs` 113 and 295–299: errors that noodles reports earlier.
+- `main.rs` 1409–1416: a failed rename after a successful write.
+
+**(c) Covered on another platform or by unmeasured processes:**
+- `main.rs` 1486–1494: Windows device names (the Windows test runs on Windows only).
+- `main.rs` 1449–1465: the signal handler, which the Unix signal tests exercise in child processes that end by signal.
 
 ## 4. Part B: edge-case matrix
 
