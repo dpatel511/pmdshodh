@@ -1171,7 +1171,7 @@ thead th { background: var(--head); padding-left: 4px; }
 code { font-size: 0.9em; word-break: break-all; }
 .tables { display: flex; flex-wrap: wrap; gap: 0 32px; }
 .charts { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: flex-start; }
-figure { margin: 0; max-width: 100%; }
+figure { margin: 0; max-width: min(100%, 440px); }
 .figure-with-note { max-width: 440px; }
 svg { max-width: 100%; height: auto; font-size: 11px; fill: var(--fg); }
 svg .axis { stroke: var(--muted); } svg .grid { stroke: var(--line); } svg .mark { stroke: var(--fg); stroke-dasharray: 2 2; }

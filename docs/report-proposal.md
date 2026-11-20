@@ -1,6 +1,6 @@
 # Proposal: HTML damage report (0.3.0, roadmap milestone 5)
 
-Status: **agreed 2026-11-20.** D1–D6 were accepted as recommended (section 6). Implemented on branch `feat/report`, not yet released. The eager test BAM validation (section 7, step 4) is still to do.
+Status: **agreed 2026-11-20.** D1–D6 were accepted as recommended (section 6). Implemented on branch `feat/report` (PR #44), not yet released. Validated on the eager test BAMs on 2026-11-20 (section 9).
 
 ## 1. Goal and scope
 
@@ -129,3 +129,39 @@ State on 2026-11-20:
   - benchmark BAMs in `data/` and the ss library in `data_ss/`;
   - the aligner sweep in `sweep/`.
 - This file is untracked. Commit it with the docs PR once D1–D6 are decided.
+
+## 9. Validation (2026-11-20, branch `feat/report`)
+
+**Data:**
+- the two nf-core/eager test BAMs used for parity (docs/blackbox.md §7): nf-core/test-datasets, branch `eager`, MIT licence, re-downloaded 2026-11-20 (SHA-256 `7bf408da…f0eb` and `65f68bde…5d4a`, unchanged);
+- the real ss library UKY001.B0102 (MT), to check the ss curve.
+
+These stay on the bench machine (`/root/bench/eager_report`) and are not committed.
+
+**Runs** (WSL Ubuntu 24.04, release build of `451b13c` plus the figure-width CSS fix):
+- `filter -t 3 --summary` and `damage` on JK2782 (mammoth mtDNA, ds);
+- `filter -t 3 --UDGhalf --summary` and `damage` on JK2067_downsampled_s0.1 (human 1240k, ds, UDG-treated);
+- `damage --ss` on UKY001.B0102.MT.
+
+The reports were: JK2782 alone (37 KB), JK2067 alone (28 KB), and all five summaries together (164 KB). Writing the five-sample report twice gave identical files.
+
+**Number check:** a script (kept with the data, not committed) reads every `data-series` in each report. It recomputes from the raw counts in the summary named in that section:
+- the 5′ and 3′ damage curves, other substitutions, score-histogram percentages and length bars;
+- the first-base text;
+- the read-count rows, the kept fraction and the threshold marks;
+- and, for the overlays, each sample's three curves.
+
+Results: 17, 17 and 83 PASS lines, 0 FAIL, with a tolerance of 0.0005 percentage points. Changing one plotted value by 0.002 made it report 1 FAIL.
+
+**By eye:**
+- Overlays and per-sample sections in light and dark mode. A legend wider than its chart had pushed the overlay charts into one column; figures are now capped at the chart width.
+- Rates for the first three positions (JSON counts):
+
+  | Sample | 5′ C→T | 3′ G→A (ds) or 3′ C→T (ss) |
+  |---|---|---|
+  | JK2782 | 13.9, 7.0, 6.9% | G→A 15.8, 8.8, 3.7% |
+  | JK2067 | 0.9, 0.4, 0.2% | G→A 1.3, 0.8, 0.3% |
+  | UKY001 MT (ss) | 28.0, 16.8, 11.4% | C→T 19.5, 17.5, 15.8% (G→A at the 3′ end is 0.6%, as expected for ss) |
+
+  JK2067's near-zero terminal damage fits the design sheet's "full UDG" rather than the README's "half" (docs/blackbox.md §7). The report shows the data as given.
+- With `--UDGhalf`, the JK2067 curves beyond position 1 are noisy, because only CpG sites count there. The report says so in its note.
