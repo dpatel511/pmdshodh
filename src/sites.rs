@@ -168,7 +168,7 @@ pub fn reference_along_read_from_fasta(
 /// and deleted reference bases uppercased (calmd writes soft-masked bases in uppercase too, so
 /// PMDtools counts them as C or G when it reads its output), a `0` between adjacent
 /// letters and after a deletion that a mismatch follows. Read and reference bases match when
-/// equal ignoring case, or when the read has `=`.
+/// equal ignoring case, or when the read has `=`; as in calmd, `N` never matches, not even `N`.
 pub fn md_from_reference(seq: &[u8], cigar: &[CigarOp], window: &[u8]) -> Vec<u8> {
     let mut md = Vec::new();
     let mut run = 0usize;
@@ -182,7 +182,8 @@ pub fn md_from_reference(seq: &[u8], cigar: &[CigarOp], window: &[u8]) -> Vec<u8
             CigarOp::Match(n) | CigarOp::SequenceMatch(n) | CigarOp::SequenceMismatch(n) => {
                 for _ in 0..n {
                     let (read, refb) = (seq[s], window[r]);
-                    if read == b'=' || read.eq_ignore_ascii_case(&refb) {
+                    let n = |b: u8| b.eq_ignore_ascii_case(&b'N');
+                    if read == b'=' || (read.eq_ignore_ascii_case(&refb) && !n(read)) {
                         run += 1;
                     } else {
                         flush(&mut md, &mut run);
@@ -811,6 +812,21 @@ mod tests {
             let from_fasta = reference_along_read_from_fasta(seq, cigar, window).unwrap();
             assert_eq!(from_md, from_fasta, "{cigar:?} {md}");
         }
+        // Audit finding B2 (docs/audit-0.3.md §10): calmd counts N against N as a mismatch and
+        // writes the N, so --pmdtools-compat -r must too. Expected MD strings are samtools 1.25
+        // calmd's output for these reads (2026-11-21).
+        assert_eq!(
+            String::from_utf8_lossy(&md_from_reference(b"ACGTANGT", &[Match(8)], b"ACGTANGT")),
+            "5N2"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&md_from_reference(
+                b"GGACGNNAC",
+                &[SoftClip(2), Match(3), Deletion(1), Match(4)],
+                b"ACGTNNAC"
+            )),
+            "3^T0N0N2"
+        );
         // A `=` read base matches; MD can only give `=` back for it, the reference gives the base.
         assert_eq!(md_from_reference(b"AC=T", &[Match(4)], b"ACGT"), b"4");
         assert_eq!(
