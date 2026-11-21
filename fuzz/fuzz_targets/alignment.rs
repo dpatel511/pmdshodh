@@ -56,14 +56,20 @@ fuzz_target!(|data: &[u8]| {
             break;
         };
         check(process(&record, &settings, &filters, None, Some(&mut damage)));
-        // With -r: a reference window as long as the alignment's reference span.
-        let span: usize = record
-            .cigar()
+        // With -r: a reference window as long as the alignment's reference span. noodles' lazy
+        // CIGAR iterator repeats an error without advancing, so stop at the first one (as
+        // pmdshodh's own `collect` does).
+        let Ok(ops) = record.cigar().iter().collect::<Result<Vec<_>, _>>() else {
+            continue;
+        };
+        let span: usize = ops
             .iter()
-            .filter_map(Result::ok)
             .filter(|op| op.kind().consumes_reference())
             .map(|op| op.len())
             .sum();
+        if span > 1 << 20 {
+            continue;
+        }
         let window: Vec<u8> = REFERENCE.iter().copied().cycle().take(span).collect();
         check(process(&record, &settings, &filters, Some(&window), Some(&mut damage)));
     }
