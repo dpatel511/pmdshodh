@@ -8,6 +8,7 @@ Changes to the JSON run summary are listed with its `format_version`.
 
 ### Fixed
 - With `-r`, a FASTA that no longer matched its `.fai` index (for example, rewrapped after indexing) was read with wrong reference bases, with no error, from its second 1 MiB block on. In a synthetic 2.5 Mb test, one read scored 6.55 from 8 sites instead of −1.17 from 22. `samtools faidx` returns wrong bases in this case too. pmdshodh now checks that every line break is where the index puts it, and that each sequence starts after its header line. A mismatch stops the run with an input error (exit 2) asking to index the FASTA again. This was already the case for CRAM input from an uncompressed FASTA, and now also covers bgzip-compressed FASTA. Output for correctly indexed FASTAs is unchanged. Found by the 0.3 audit (docs/audit-0.3.md, B1).
+- `--pmdtools-compat -r` treated an `N` read base over an `N` reference base as a match when it built the MD tag, but `samtools calmd` writes it as a mismatch. Only reads that also have PMDtools' combined-CIGAR reconstruction (docs/blackbox.md 1.6c) were affected: an insertion or soft clip together with a deletion, which shifts MD letters along the read. On 583 generated reads, 15 differed from `samtools calmd | pmdtools` 0.60, by up to 0.085. They now match, with a largest difference of 2e-14. Default mode is unchanged, because `N` is never a C or G site. Found by the 0.3 audit (docs/audit-0.3.md, B2).
 
 ## [0.3.0] - 2026-11-20
 
