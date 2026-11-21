@@ -6,6 +6,9 @@ Changes to the JSON run summary are listed with its `format_version`.
 
 ## [Unreleased]
 
+### Fixed
+- With `-r`, a FASTA that no longer matched its `.fai` index (for example, rewrapped after indexing) was read with wrong reference bases, with no error, from its second 1 MiB block on. In a synthetic 2.5 Mb test, one read scored 6.55 from 8 sites instead of −1.17 from 22. `samtools faidx` returns wrong bases in this case too. pmdshodh now checks that every line break is where the index puts it, and that each sequence starts after its header line. A mismatch stops the run with an input error (exit 2) asking to index the FASTA again. This was already the case for CRAM input from an uncompressed FASTA, and now also covers bgzip-compressed FASTA. Output for correctly indexed FASTAs is unchanged. Found by the 0.3 audit (docs/audit-0.3.md, B1).
+
 ## [0.3.0] - 2026-11-20
 
 A new `report` subcommand turns JSON run summaries into an HTML damage report. Scores, filtering and the JSON summary format are unchanged from 0.2.4. The report was checked on the nf-core/eager test BAMs (mammoth mtDNA and human 1240k) and on a real single-stranded library: every plotted number matched the JSON counts (docs/report-proposal.md §9).
