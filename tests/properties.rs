@@ -333,6 +333,15 @@ proptest! {
         );
         prop_assert_eq!(r["kept"].as_u64().unwrap(), kept.len() as u64);
         prop_assert_eq!(r["scored"].as_u64().unwrap(), all.len() as u64);
+        // Property 6: report accepts every summary pmdshodh writes, and gives the same page twice.
+        let page = |name: &str| {
+            let out = input.dir.join(name);
+            run(&["report", "--quiet", s(&summary), "-o", s(&out)]);
+            fs::read(out).unwrap()
+        };
+        let first = page("a.html");
+        prop_assert!(first.starts_with(b"<!DOCTYPE html>"));
+        prop_assert!(first == page("b.html"));
     }
 
     /// Property 4: scores from the reference (-r) equal scores from correct MD tags, in default
