@@ -1,0 +1,47 @@
+# Fuzz targets for the 0.3 audit (docs/audit-0.3.md section 6). Not part of the published crate or
+# the wheels; needs a nightly toolchain: `cargo +nightly fuzz run <target>` from the repository root.
+[package]
+name = "pmdshodh-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+noodles = { version = "=0.119.0", features = ["core", "sam"] }
+serde_json = "1.0.154"
+pmdshodh = { path = ".." }
+
+[[bin]]
+name = "alignment"
+path = "fuzz_targets/alignment.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bgzf"
+path = "fuzz_targets/bgzf.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "md"
+path = "fuzz_targets/md.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "summary"
+path = "fuzz_targets/summary.rs"
+test = false
+doc = false
+bench = false
+
+# Keep this crate out of any parent workspace.
+[workspace]
