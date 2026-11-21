@@ -164,6 +164,25 @@ Generated reads, built from random reference windows with random damage, mismatc
 7. **Counts:** input = scored + skipped by every reason, and kept + removed = scored.
 8. **Model:** compat scores equal the Python oracle (`tests/oracle/pmd_reference.py`) on generated reads within 1e-9.
 
+### 5.1 Results (2026-11-21, `tests/properties.rs`)
+
+- **The generator:** a random 5,000-base reference with 1% `N`, and reads with:
+  - M runs with insertions, deletions and soft clips;
+  - C→T and G→A damage near the ends, and 1% mismatches;
+  - both strands, random qualities and MAPQ;
+  - duplicate, secondary and paired flags, and 2% unmapped reads;
+  - MD tags identical to `samtools calmd`'s (checked on 592 reads).
+
+  A failing case is reproduced from its seed with the ignored `regenerate` test.
+- **Properties 1 and 5** (threads; SAM against BAM): one test, on inputs of up to 25,000 reads, so up to three batches.
+- **Properties 2, 3, 6 and 7** (filter subset and order; threshold rule; report; counts): one test.
+- **Property 4** (`-r` against MD; default, compat and ss): one test.
+- **Property 8** is covered elsewhere, not by proptest: it needs Python, which the test suite does not depend on. It is covered by `model_parity` (precomputed oracle terms) and by the PMDtools comparisons.
+- **Results:** 24 cases per property passed on WSL with the B2 fix: about 300,000 reads for properties 1 and 5, and about 60,000 for the others. CI runs 12 cases per property.
+- **Findings:**
+  - property 4 found B2;
+  - the first failure of property 1 was a test bug: the recorded command line contains `-@ N`, so outputs are now compared without it.
+
 ## 6. Part D: fuzzing (`cargo-fuzz`, nightly, outside the crate)
 
 - **Target 1, alignment input.** Arbitrary bytes as SAM, and as a BAM body behind a valid header, through to scoring. Expect a clean error (exit 2) or a result. A panic, hang or memory growth is a finding.
@@ -224,6 +243,7 @@ Recorded as they are found:
 
 | # | Kind | What | Evidence (test, data, command) | Status |
 |---|---|---|---|---|
+| B2 | Bug | `--pmdtools-compat -r` counted an `N` read base over an `N` reference base as a match when it built MD from the reference. calmd counts it as a mismatch (`5N2` for `ACGTANGT` over `ACGTANGT`). Reads that also hit the 1.6c reconstruction then scored differently from `calmd \| pmdtools`. | Property 4 on seed 48490, 592 reads with calmd-identical MD: compat from MD matched PMDtools 0.60 on all 583 scored reads (≤ 2e-14); compat `-r` differed on 15 reads, by up to 0.085. All 15 had N over N together with the 1.6c trigger (2026-11-21). Real libraries are not affected (byte-identical before and after). | Fix in PR #52: N never matches, as in calmd. Afterwards, 0 of 583 reads differ from PMDtools. |
 | B1 | Bug | With `-r` and SAM/BAM input, a FASTA whose `.fai` no longer matches its line lengths (rewrapped after indexing) is read silently, giving wrong reference bases from the second 1 MiB block on. The CRAM path checks line lengths and stops with an error; the SAM/BAM path does not. `samtools faidx` also returns wrong bases here, and `samtools calmd` fails reading the whole sequence. | A synthetic 2.5 Mb reference, indexed at 60 columns and rewrapped to 70, with one read at 2,000,001: `score -r` gave 6.55 from 8 sites instead of −1.17 from 22, with exit 0 (2026-11-21). | Fix in PR #51: every line break is checked against the index, for the `-r` blocks and for CRAM from plain and bgzip FASTA. Regression test `reference::tests::fasta_that_does_not_match_its_index_is_an_error`. Outputs for correctly indexed FASTAs were unchanged on 4 real inputs, and speed was unchanged. |
 
 Kinds:
