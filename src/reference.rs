@@ -388,17 +388,18 @@ impl Reference {
             .get(name)
             .ok_or_else(|| invalid(format!("reference has no sequence named {name}")))?;
         let seq_len = self.sequences[id].1;
-        if start + len > seq_len {
+        let end = start.checked_add(len).filter(|&end| end <= seq_len);
+        let Some(end) = end else {
             return Err(invalid(format!(
                 "alignment ends at {} but reference sequence {name} has {seq_len} bases",
-                start + len
+                start.saturating_add(len)
             )));
-        }
+        };
         let mut pos = start;
-        while pos < start + len {
+        while pos < end {
             let block = pos / BLOCK;
             let from = pos - block * BLOCK;
-            let to = (start + len - block * BLOCK).min(BLOCK);
+            let to = (end - block * BLOCK).min(BLOCK);
             let bases = self.block(id, block)?;
             out.extend_from_slice(&bases[from..to]);
             pos = (block + 1) * BLOCK;
@@ -474,6 +475,12 @@ mod tests {
         assert_eq!(out, b"AC");
         assert!(r.fetch("c2", 1, 2, &mut Vec::new()).is_err());
         assert!(r.fetch("c3", 0, 1, &mut Vec::new()).is_err());
+        // B3: a window length near usize::MAX is out of bounds, not an overflow.
+        let e = r.fetch("c2", 1, usize::MAX, &mut Vec::new()).unwrap_err();
+        assert!(
+            e.to_string().contains("reference sequence c2 has 2 bases"),
+            "{e}"
+        );
     }
 
     /// Audit finding B1 (docs/audit-0.3.md §10): a FASTA that no longer matches its index was read

@@ -74,24 +74,7 @@ pub fn reference_along_read(
     cigar: &[CigarOp],
     md: &[u8],
 ) -> Result<Vec<Option<u8>>, String> {
-    let read_len: usize = cigar
-        .iter()
-        .map(|op| match op {
-            CigarOp::Match(n)
-            | CigarOp::SequenceMatch(n)
-            | CigarOp::SequenceMismatch(n)
-            | CigarOp::Insertion(n)
-            | CigarOp::SoftClip(n) => *n,
-            _ => 0,
-        })
-        .sum();
-    if read_len != seq.len() {
-        return Err(format!(
-            "CIGAR covers {read_len} read bases but SEQ has {}",
-            seq.len()
-        ));
-    }
-
+    check_read_length(seq, cigar)?;
     let mut md = MdCursor { md, pos: 0, run: 0 };
     let mut refs = Vec::with_capacity(seq.len());
     for op in cigar {
@@ -115,6 +98,7 @@ pub fn reference_along_read(
 }
 
 /// Reference bases the CIGAR consumes (`M`, `=`, `X`, `D`): the length of the window `-r` fetches.
+/// Saturates rather than wrapping, so an absurd CIGAR asks for an out-of-bounds window.
 pub fn reference_span(cigar: &[CigarOp]) -> usize {
     cigar
         .iter()
@@ -125,7 +109,31 @@ pub fn reference_span(cigar: &[CigarOp]) -> usize {
             | CigarOp::Deletion(n) => *n,
             _ => 0,
         })
-        .sum()
+        .fold(0, usize::saturating_add)
+}
+
+/// The CIGAR must cover exactly SEQ's bases (`M`, `=`, `X`, `I`, `S`). Checked before any per-base
+/// vector is built, with a saturating sum, so absurd lengths can neither allocate nor wrap round
+/// to SEQ's length (audit finding B3).
+fn check_read_length(seq: &[u8], cigar: &[CigarOp]) -> Result<(), String> {
+    let read_len = cigar
+        .iter()
+        .map(|op| match op {
+            CigarOp::Match(n)
+            | CigarOp::SequenceMatch(n)
+            | CigarOp::SequenceMismatch(n)
+            | CigarOp::Insertion(n)
+            | CigarOp::SoftClip(n) => *n,
+            _ => 0,
+        })
+        .fold(0, usize::saturating_add);
+    if read_len != seq.len() {
+        return Err(format!(
+            "CIGAR covers {read_len} read bases but SEQ has {}",
+            seq.len()
+        ));
+    }
+    Ok(())
 }
 
 /// [`reference_along_read`] from the reference itself (`-r`): `window` holds the reference bases
@@ -136,6 +144,7 @@ pub fn reference_along_read_from_fasta(
     cigar: &[CigarOp],
     window: &[u8],
 ) -> Result<Vec<Option<u8>>, String> {
+    check_read_length(seq, cigar)?;
     let mut refs = Vec::with_capacity(seq.len());
     let mut r = 0;
     for op in cigar {
@@ -153,13 +162,6 @@ pub fn reference_along_read_from_fasta(
             CigarOp::HardClip(_) => {}
             CigarOp::Unsupported => return Err("unsupported CIGAR operation (N or P)".into()),
         }
-    }
-    if refs.len() != seq.len() {
-        return Err(format!(
-            "CIGAR covers {} read bases but SEQ has {}",
-            refs.len(),
-            seq.len()
-        ));
     }
     Ok(refs)
 }
@@ -760,6 +762,32 @@ mod tests {
         s.min_baseq = 41;
         assert_eq!(score("TAAA", "CAAA", false, &s).n_sites, 0);
     }
+    /// Audit finding B3 (docs/audit-0.3.md §10): with -r, a CIGAR that covers far more read bases
+    /// than SEQ had its per-base vector built before the length check (a 2e16-base insertion
+    /// aborted on allocation), and CIGAR lengths could add up past usize::MAX, wrap round to
+    /// SEQ's length and pass. Both reconstructions now reject them first, without allocating.
+    #[test]
+    fn absurd_cigar_lengths_are_rejected_before_allocating() {
+        use CigarOp::*;
+        let huge = usize::MAX / 2;
+        for cigar in [
+            vec![Match(1), Insertion(20_000_000_000_000_000)],
+            vec![Match(1), SoftClip(huge)],
+            // Wraps to 2 with a plain sum.
+            vec![Insertion(usize::MAX), Insertion(usize::MAX), Match(4)],
+        ] {
+            let e = reference_along_read_from_fasta(b"AC", &cigar, b"ACGT").unwrap_err();
+            assert!(e.contains("but SEQ has 2"), "{cigar:?}: {e}");
+            let e = reference_along_read(b"AC", &cigar, b"2").unwrap_err();
+            assert!(e.contains("but SEQ has 2"), "{cigar:?}: {e}");
+        }
+        // The reference window length saturates instead of wrapping to a short window.
+        assert_eq!(
+            reference_span(&[Deletion(usize::MAX), Match(5)]),
+            usize::MAX
+        );
+    }
+
     /// `-r` reconstruction equals the MD reconstruction of the MD that calmd-style
     /// `md_from_reference` writes, for mismatches, deletions, insertions, soft clips, lowercase
     /// (soft-masked) reference bases; `=` read bases are checked separately.

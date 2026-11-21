@@ -414,3 +414,35 @@ fn write_failure_exits_1() {
         stderr(&o)
     );
 }
+
+/// Audit finding B3: with -r, a CIGAR covering far more bases than SEQ aborted while allocating
+/// (2e16 bases) or used gigabytes before the length check. It is now an input error at once.
+#[test]
+fn absurd_cigar_lengths_with_reference_are_input_errors() {
+    let dir = tmp_dir("absurd_cigar");
+    let fasta = dir.join("c.fa");
+    fs::write(&fasta, format!(">c\n{}\n", "ACGT".repeat(250))).unwrap();
+    fs::write(dir.join("c.fa.fai"), "c\t1000\t3\t1000\t1001\n").unwrap();
+    for cigar in ["1M20000000000000000I", "1M4000000000I"] {
+        let input = sam(
+            &dir,
+            "absurd.sam",
+            &[&format!("r1\t0\tc\t10\t37\t{cigar}\t*\t0\t0\tAC\tII")],
+        );
+        for compat in [&[][..], &["--pmdtools-compat"][..]] {
+            let args = [
+                &["score", "--quiet", "-r", s(&fasta)][..],
+                compat,
+                &[s(&input)],
+            ]
+            .concat();
+            let start = std::time::Instant::now();
+            input_error(&args, "but SEQ has 2");
+            assert!(
+                start.elapsed().as_secs() < 5,
+                "{cigar}: took {:?}",
+                start.elapsed()
+            );
+        }
+    }
+}
