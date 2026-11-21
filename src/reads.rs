@@ -134,6 +134,12 @@ struct Fields<'a> {
 }
 
 /// `reference`: with `-r`, the reference bases from the alignment start, `reference_span` long.
+///
+/// Unmapped reads (flag 4) are skipped. PMDtools ignores flags, so with `--pmdtools-compat` a read
+/// flagged unmapped that still has an alignment (bwa writes CIGAR and MD for reads overhanging a
+/// reference end) is scored from its MD as PMDtools scores it; one with no alignment, or one that
+/// cannot be scored, still counts as unmapped (audit finding B4). No reference window is fetched
+/// for unmapped reads, since they may overhang the reference.
 fn process_fields(
     record: &Fields<'_>,
     settings: &Settings,
@@ -142,9 +148,25 @@ fn process_fields(
     damage: Option<&mut DamageCounts>,
 ) -> Result<Outcome, String> {
     let flags = (record.flags)().map_err(|e| format!("invalid FLAG: {e}"))?;
-    if flags.is_unmapped() {
+    if !flags.is_unmapped() {
+        return score_fields(record, settings, filters, reference, damage);
+    }
+    let placed = settings.pmdtools_compat && (record.cigar)().is_ok_and(|c| !c.is_empty());
+    if !placed {
         return Ok(Outcome::Skipped(SkipReason::Unmapped));
     }
+    Ok(score_fields(record, settings, filters, None, damage)
+        .unwrap_or(Outcome::Skipped(SkipReason::Unmapped)))
+}
+
+fn score_fields(
+    record: &Fields<'_>,
+    settings: &Settings,
+    filters: &ReadFilters,
+    reference: Option<&[u8]>,
+    damage: Option<&mut DamageCounts>,
+) -> Result<Outcome, String> {
+    let flags = (record.flags)().map_err(|e| format!("invalid FLAG: {e}"))?;
     // A missing mapping quality (255) is kept by any threshold, as in PMDtools.
     let mapq = match (record.mapping_quality)().map_err(|e| format!("invalid MAPQ: {e}"))? {
         Some(m) => m.get(),

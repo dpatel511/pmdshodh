@@ -115,6 +115,7 @@ Default = PMDtools behaviour, except where marked. Every departure gets a regres
 | Situation | PMDtools 0.60 | pmdshodh v0.1 | Departure? |
 |---|---|---|---|
 | Unmapped read (flag 4, no CIGAR) | dropped (no MD) | not scored, not written by `filter`, counted as `unmapped` | no (same outcome) |
+| Unmapped read (flag 4) that still has a CIGAR and MD (bwa writes these for reads overhanging a reference end) | scored, since PMDtools ignores flags | **not scored by default**, counted as `unmapped`; `--pmdtools-compat` scores it from its MD (also with `-r`, as no reference window is fetched for unmapped reads), and counts it as unmapped if it cannot be scored (audit finding B4, 2026-11-21) | **yes** |
 | Mapped read without MD | **dropped silently**, exit 0 | **error, exit 2** (CLAUDE.md §7) | **yes** |
 | MD without the `0` separator after a deletion (MALT, issue #5) | misparsed silently | parsed using the CIGAR deletion length; correct score | **yes**, fixes #5 |
 | MD that contradicts the CIGAR (length or base) | scored silently | error, exit 2 | **yes** |

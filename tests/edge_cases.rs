@@ -446,3 +446,61 @@ fn absurd_cigar_lengths_with_reference_are_input_errors() {
         }
     }
 }
+
+/// Audit finding B4: PMDtools ignores flags, so it scores a read flagged unmapped that still has
+/// a CIGAR and MD (bwa writes these for reads overhanging a reference end). `--pmdtools-compat`
+/// skipped them. Now compat scores them as if mapped (from MD, also with -r); default still skips
+/// them, and so does compat for flag-4 reads with no alignment or an unusable one.
+#[test]
+fn compat_scores_placed_unmapped_reads_like_pmdtools() {
+    let dir = tmp_dir("placed_unmapped");
+    let mapped = "r1\t0\tc\t11\t37\t10M\t*\t0\t0\tTAAAAAAAAA\tIIIIIIIIII\tMD:Z:0C9";
+    let placed = mapped.replacen("\t0\tc", "\t4\tc", 1);
+    let records = [
+        placed.as_str(),
+        // No alignment, and an alignment whose MD cannot describe its CIGAR.
+        "r2\t4\t*\t0\t0\t*\t*\t0\t0\tTAAAAAAAAA\tIIIIIIIIII",
+        "r3\t4\tc\t11\t37\t10M\t*\t0\t0\tTAAAAAAAAA\tIIIIIIIIII\tMD:Z:3",
+    ];
+    let input = sam(&dir, "placed.sam", &records);
+    let alone = sam(&dir, "mapped.sam", &[mapped]);
+    let fasta = dir.join("c.fa");
+    fs::write(
+        &fasta,
+        format!(">c\n{}C{}\n", "A".repeat(10), "A".repeat(989)),
+    )
+    .unwrap();
+    fs::write(dir.join("c.fa.fai"), "c\t1000\t3\t1000\t1001\n").unwrap();
+    let score = |args: &[&str], p: &Path| {
+        let o = run(&[&["score", "--quiet"][..], args, &[s(p)]].concat());
+        assert!(o.status.success(), "{args:?}: {}", stderr(&o));
+        // Read name, score and sites; the flag column keeps each read's own flag.
+        String::from_utf8(o.stdout)
+            .unwrap()
+            .lines()
+            .map(|l| {
+                let f: Vec<&str> = l.split('\t').collect();
+                format!("{} {} {}", f[0], f[2], f[3])
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let want = score(&["--pmdtools-compat"], &alone);
+    for extra in [&[][..], &["-r", s(&fasta)][..]] {
+        let compat = score(&[&["--pmdtools-compat"][..], extra].concat(), &input);
+        assert_eq!(
+            compat, want,
+            "compat {extra:?}: placed unmapped r1 scored as mapped"
+        );
+        let j = damage_json(&input, &[&["--pmdtools-compat"][..], extra].concat());
+        assert_eq!(j["reads"]["scored"], 1);
+        assert_eq!(j["reads"]["skipped"]["unmapped"], 2);
+    }
+    let default = score(&[], &input);
+    assert_eq!(
+        default.lines().count(),
+        1,
+        "default skips all unmapped reads: {default}"
+    );
+    assert_eq!(damage_json(&input, &[])["reads"]["skipped"]["unmapped"], 3);
+}
