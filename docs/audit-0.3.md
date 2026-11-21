@@ -189,6 +189,24 @@ Generated reads, built from random reference windows with random damage, mismatc
 - **Target 2, summary JSON.** Arbitrary JSON, and valid summaries with mutated fields, through `report::parse` and `render`. Expect an error naming the field, or valid HTML with no NaN or inf.
 - Run each for 1 hour. Minimise any crash into a regression test in `tests/`.
 
+### 6.1 Results (2026-11-21)
+
+Four targets live in `fuzz/`, which is outside the published crate (`cargo package --list` shows no file from it). They were run with cargo-fuzz 0.13.2 and nightly 1.102, as a release build with AddressSanitizer, under WSL Ubuntu 24.04, for 1 hour each, from seeds made from the test data.
+
+| Target | What it runs | Inputs | Result |
+|---|---|---|---|
+| `alignment` | SAM records through `reads::process` in every mode (ds/ss, UDG none/half/full, compat, filters), with MD and with a `-r` window; scores must be finite | 1.07 M, then 9.54 M after the fix | **B3** (allocation of 4×10¹⁶ bytes); after the fix, clean for 1 hour |
+| `bgzf` | arbitrary bytes through the BGZF reader, and a write/read round trip, with and without the thread pool | 21,961 (about 20 per second; the inputs grew to 160 KB) | clean |
+| `md` | MD/CIGAR reconstruction on arbitrary input, and MD written from a window giving back that window | 208 M | clean |
+| `summary` | arbitrary JSON through `report::parse` and `render`; numeric SVG and data attributes must be finite | 12.0 M | clean |
+
+The first runs produced three failures that were not pmdshodh bugs:
+- **A hang in `alignment`:** the harness skipped CIGAR errors with `filter_map(Result::ok)`, and noodles' lazy iterator repeats an error without advancing. pmdshodh's own `collect` stops at the first error, and the binary rejects the record at once.
+- **A "timeout" in `bgzf`:** libFuzzer reported it when the 1-hour limit ended a unit (a duration of 2^64 − 1 s). The input runs in 336 ms.
+- **A panic in `summary`:** the harness flagged the text "inf<" in a fuzzed skip-reason name (`unsupported_cigarno_inf`), which the page shows escaped. That is not a number.
+
+The harnesses were fixed and the affected targets rerun for a full hour.
+
 ## 7. Part E: real-data matrix (data already on the bench machine)
 
 | Library | Type | Reads | Source |
@@ -284,6 +302,7 @@ Recorded as they are found:
 
 | # | Kind | What | Evidence (test, data, command) | Status |
 |---|---|---|---|---|
+| B3 | Bug | With `-r`, a CIGAR covering far more read bases than SEQ had its per-base vector built before the length check. Separately, CIGAR lengths were summed with a plain sum, which could wrap round to SEQ's length, and `fetch` could overflow at `start + len`. | Fuzz target `alignment`, then the release binary with `SEQ` = `AC`: `1M4000000000I` used 7.3 GB for 39 s before exit 2; `1M20000000000000000I` aborted with "memory allocation of 40000000000000002 bytes failed", exit 134 (2026-11-21). Without `-r`, both were exit 2 at once. | Fix in PR #55: the length is checked first with a saturating sum, `reference_span` saturates, and `fetch` uses `checked_add`. Three regression tests. Valid reads give identical output (ber2m, Motala3; default and compat). |
 | B2 | Bug | `--pmdtools-compat -r` counted an `N` read base over an `N` reference base as a match when it built MD from the reference. calmd counts it as a mismatch (`5N2` for `ACGTANGT` over `ACGTANGT`). Reads that also hit the 1.6c reconstruction then scored differently from `calmd \| pmdtools`. | Property 4 on seed 48490, 592 reads with calmd-identical MD: compat from MD matched PMDtools 0.60 on all 583 scored reads (≤ 2e-14); compat `-r` differed on 15 reads, by up to 0.085. All 15 had N over N together with the 1.6c trigger (2026-11-21). Real libraries are not affected (byte-identical before and after). | Fix in PR #52: N never matches, as in calmd. Afterwards, 0 of 583 reads differ from PMDtools. |
 | B1 | Bug | With `-r` and SAM/BAM input, a FASTA whose `.fai` no longer matches its line lengths (rewrapped after indexing) is read silently, giving wrong reference bases from the second 1 MiB block on. The CRAM path checks line lengths and stops with an error; the SAM/BAM path does not. `samtools faidx` also returns wrong bases here, and `samtools calmd` fails reading the whole sequence. | A synthetic 2.5 Mb reference, indexed at 60 columns and rewrapped to 70, with one read at 2,000,001: `score -r` gave 6.55 from 8 sites instead of −1.17 from 22, with exit 0 (2026-11-21). | Fix in PR #51: every line break is checked against the index, for the `-r` blocks and for CRAM from plain and bgzip FASTA. Regression test `reference::tests::fasta_that_does_not_match_its_index_is_an_error`. Outputs for correctly indexed FASTAs were unchanged on 4 real inputs, and speed was unchanged. |
 
