@@ -215,6 +215,47 @@ For each library, in each applicable mode (ds or ss; UDG none, half or full; def
 | Outputs | `samtools quickcheck`, and `samtools view` record-by-record | valid; kept records byte-identical to the input |
 | Speed and memory | docs/benchmarks.md 0.2.1 rows, same commands, median of ≥ 3 now | no regression above run-to-run spread, or explained |
 
+### 7.1 Results (2026-11-21)
+
+The run used `docs/benchmarks/audit_matrix.py` on `main` at `ba65da0`, which includes the B1 and B2 fixes, against a v0.3.0 baseline for speed. It ran under WSL Ubuntu 24.04 on an i5-13500H with 16 threads and 7 GB, with samtools 1.25 and PMDtools 0.60 (archive md5 `c059d7ab…`). The BER11_L_NOuser and Motala3 input md5s were checked. Result: **129 PASS, 0 FAIL.**
+
+| Library | Reads | Compat scores vs PMDtools | Compat kept reads (t = 3) | Kept records unchanged, in order | `-r` vs MD |
+|---|---|---|---|---|---|
+| BER11_L_NOuser | 14,006,183 | 0 above 1e-6 (largest 6e-14) | 1,031,193 = PMDtools | 1,029,380 | 0 differ; 0 MD tags disagree |
+| Motala3 | 23,622,338 | 0 (5e-14) | 301,867 = PMDtools | 301,722 | 71 differ, all within the 107 MD tags that disagree with the reference |
+| JK2067 | 125,285 | 0 (2.9e-14) | 1,745 = PMDtools | 1,745 | — |
+| UKY001 1240K (ss) | 14,461,790 | 0 (8.2e-14) | 7,169,568 = PMDtools | 5,327,200 | — |
+| UKY001 MT (ss) | 281,906 | 0 (6.2e-14) | 162,734 = PMDtools | 117,380 | — |
+| JK2782 | 1,197 | 0 (3e-14) | 188 = PMDtools | 188 | — |
+
+The kept counts in default mode are lower than compat's, as the documented departures predict (design.md §5). For ss, this is the single count of each C site (SI Eq. S1).
+
+Also checked, all PASS:
+- **Read counts** against samtools for every library: input count; duplicate, secondary, supplementary, QC-fail, paired and reverse flags; unmapped skips; input = scored + skipped.
+- **`score`, `damage` and `filter`** byte-identical at `-@ 1` and `-@ 8` for every library, apart from the recorded command line.
+- **Filter outputs** pass `samtools quickcheck`.
+- **Reports** match their JSON: 17 checks per library and 110 for the six-library report.
+- **Damage tables**, compat, against PMDtools `--deamination --range 30` on the 200,000-read subsets of BER11_L_NOuser and Motala3, in UDG none, half and full: all within 5e-6, which is PMDtools' 5-decimal rounding.
+- **All 17 aligner-sweep BAM and CRAM files:** `-@ 1` equals `-@ 8`, and input counts equal samtools'. The `calmd -e` file needs `-r` (its `=` bases), and passes with it.
+
+Expected input errors (exit 2), as documented:
+- `calmd_eq.bam` without `-r`: "read has '=' bases …";
+- BER11_L with its USER-treated libraries: "MD is longer than the CIGAR", the broken MD tags noted in docs/benchmarks.md.
+
+Speed and memory, `filter -t 3`, v0.3.0 against `main`, alternating, median of 3:
+
+| | BER11_L_NOuser `-@ 1` | `-@ 8` | Motala3 `-@ 1` | `-@ 8` |
+|---|---|---|---|---|
+| v0.3.0 | 42.41 s | 8.64 s | 58.99 s | 9.94 s |
+| main | 41.69 s | 8.53 s | 56.92 s | 9.95 s |
+| Max RSS (both) | 11 MB | 38 MB | 11 MB | 34 MB |
+
+There is no regression; the differences are within run-to-run spread.
+
+**Not checked automatically:** that every default-mode difference from compat is explained by a listed departure. The counts agree with the departures, but reads were not classified one by one this time; that was done for the eager BAMs in docs/blackbox.md §7.
+
+**No new findings** from the real-data matrix.
+
 ## 8. Additional test data
 
 The libraries in section 7 cover ds without UDG, likely-UDG ds, ss without UDG and a range of aligner outputs. Four kinds are missing. I'll look for public sources and list each with source, licence, size and date before any download:
