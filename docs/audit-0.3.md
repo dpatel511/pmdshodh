@@ -1,6 +1,6 @@
 # Audit plan: 0.3.0, before milestone 6
 
-Status: **plan, 2026-11-20.** Nothing here has run yet. The decisions in section 2 were agreed on 2026-11-20. Findings will be recorded in section 10 as they come in.
+Status: **run 2026-11-20 to 2026-11-22.** The decisions in section 2 were agreed on 2026-11-20. Findings B1–B7 (section 10) are fixed in 0.3.1.
 
 ## 1. Goal, scope and when it is done
 

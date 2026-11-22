@@ -6,6 +6,10 @@ Changes to the JSON run summary are listed with its `format_version`.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-22
+
+Fixes from the 0.3 audit (docs/audit-0.3.md, findings B1–B7). For valid input, default-mode scores and kept reads are unchanged. With `-r`, a FASTA whose index no longer matches it is now an input error instead of giving wrong reference bases (B1), and an absurd CIGAR is an input error at once (B3). `--pmdtools-compat` now matches PMDtools 0.60 in five more cases: `N` over `N` with `-r` (B2), placed unmapped reads (B4), reads without reference bases (B5), hard-clipped reads (B6) and out-of-range filter thresholds (B7). The JSON run summary is now `format_version` 3, with one new skip reason, counted only in compat mode.
+
 ### Changed
 - JSON run summary `format_version` 3 (was 2): `reads.skipped` has a new reason, `no_reference_bases`, counted only with `--pmdtools-compat` (see Fixed, B5). Other fields are unchanged. `report` reads versions 1 to 3.
 
@@ -169,7 +173,8 @@ First release.
 - `score -o -` writes to stdout; it used to create a file named `-`.
 - `--pmdtools-compat` now also reproduces PMDtools 0.60 for lowercase reference bases in MD (never counted as C or G) and for reverse-strand reads whose MD contains characters PMDtools drops when reverse-complementing (e.g. lowercase `n`). Default scoring is unchanged; both are listed as departures in docs/design.md.
 
-[Unreleased]: https://github.com/dpatel511/pmdshodh/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/dpatel511/pmdshodh/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/dpatel511/pmdshodh/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/dpatel511/pmdshodh/compare/v0.2.4...v0.3.0
 [0.2.4]: https://github.com/dpatel511/pmdshodh/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/dpatel511/pmdshodh/compare/v0.2.2...v0.2.3
