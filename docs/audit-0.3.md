@@ -364,7 +364,49 @@ Speed and memory, `filter -t 3`, v0.3.0 against `main`, alternating, median of 3
 
 There is no regression; the differences are within run-to-run spread.
 
-**Not checked automatically:** that every default-mode difference from compat is explained by a listed departure. The counts agree with the departures, but reads were not classified one by one this time; that was done for the eager BAMs in docs/blackbox.md §7.
+**Default mode against compat, read by read (2026-11-22).** This check was not done in the first run, so it was done afterwards with `docs/benchmarks/audit_default_vs_compat.py`.
+- **Setup:** a release build whose `src/`, `Cargo.toml` and `Cargo.lock` are identical to `main` at `a87e4e5` (0.3.1 plus B8); samtools 1.25.
+- **Inputs:** the six libraries above, the three ENA libraries and the many-reference BAM of section 8.1, and the 13 aligner-sweep BAMs. `calmd_eq.bam` was left out, because default mode needs `-r` for its `=` bases.
+- **Modes:** each was run in its own library mode (ds or ss), with UDG none, half (`--UDGhalf`) and full (`--CpG`). The three ss libraries also ran in ds mode, where the ss trigger does not cover every read. In all, 78 runs.
+- **What is compared:** every record's default score with its compat score.
+- **Departure triggers checked per read:**
+  - the reference reconstruction fix: I or S together with D or `=` (blackbox.md 1.6c);
+  - lowercase MD;
+  - the reverse-read shift;
+  - the CpG wrap at the read ends: UDG modes, with the reference along SEQ starting with G and ending with C;
+  - ss mode with a C site (one term per site).
+- **The rule:** a differing read without any of these triggers counts as unexplained.
+- **Reads only one mode scores:** a read scored only by compat must be placed unmapped (B4). A read scored only by default must be hard-clipped (B6), 1-base (B8) or without reference bases (B5), the reads compat drops.
+- **Re-scoring:** reads whose only triggers are lowercase MD or the reverse shift are scored again in compat with those removed: the MD uppercased, and the dropped characters written as N. The new score must equal default's.
+- **Negative control:** a copy of the script with the CpG-wrap trigger disabled reports JK2782's 26 half- and full-mode reads as unexplained, and FAILs.
+
+**Result: 237 PASS, 0 FAIL. No read is unexplained.**
+
+| Library | ds/ss | differ: none | half | full | Causes (all modes) | Scored by one mode only |
+|---|---|---|---|---|---|---|
+| BER11_L_NOuser (14.0 M) | ds | 4,324 | 722,512 | 721,421 | CpG wrap; reconstruction 3,983 in none; lowercase MD 336 in none, 3 with the reverse shift | — |
+| Motala3 (23.6 M) | ds | 3,757 | 764,537 | 764,373 | CpG wrap; reconstruction | — |
+| JK2067 | ds | 2 | 7,762 | 7,762 | CpG wrap; reconstruction | — |
+| JK2782 | ds | 0 | 26 | 26 | CpG wrap | — |
+| UKY001 1240K (14.5 M) | ss | 14,367,584 | 8,845,859 | 7,396,923 | ss; CpG wrap; reconstruction | — |
+| UKY001 MT | ss | 280,385 | 219,538 | 204,124 | ss; CpG wrap | — |
+| I19359 MT | ss | 272,575 | 228,307 | 214,851 | ss; CpG wrap; reconstruction | — |
+| I8525 MT | ds | 38 | 22,381 | 22,377 | CpG wrap; reconstruction | 20, no reference bases (B5) |
+| I0071 MT | ds | 31 | 5,372 | 5,370 | CpG wrap; reconstruction | — |
+| Many-reference BAM | ds | 37 | 9,738 | 9,737 | CpG wrap; reconstruction | 2,181, placed unmapped (B4) |
+| UKY001 1240K, UKY001 MT, I19359 MT in ds mode | ds | 47, 0, 2 | 513,129, 8,117, 8,357 | 513,127, 8,117, 8,357 | CpG wrap; reconstruction | — |
+| 13 sweep BAMs | ds | 0–141 each | 2,013–6,051 each | 2,012–6,051 each | CpG wrap; reconstruction | 18 and 9 hard-clipped (B6), in the two bwa mem files |
+
+- **Re-scoring:** BER11's reads whose only causes are lowercase MD or the reverse shift all equal default after the change: 339 in none (3 of them with both), 91 in half and 71 in full. No other file has such reads.
+- **Untreated ds mode:** only the reconstruction fix and lowercase MD change scores.
+- **UDG modes:** the CpG wrap adds 2–6% of reads.
+- **ss mode:** almost every read differs, as expected from the one-term-per-site model.
+- **The reconstruction fix:** default's reconstruction is confirmed separately, because `-r` gives the same scores as MD on BER11 (see above).
+
+**Limits:**
+- For the CpG wrap and the ss model, the check is that the trigger is present: the script does not re-score without it.
+- For ss, the trigger covers every read with a C site. So the ss-mode runs show mainly that reads without one are equal in both modes. The same libraries in ds mode test the other departures on them.
+- Reads that carry a trigger but score the same in both modes are not counted.
 
 **No new findings** from the real-data matrix.
 
