@@ -1484,6 +1484,36 @@ fn cram_multi_reference_slice_pairs_and_wrong_reference() {
     assert!(records.is_empty());
 }
 
+/// Audit finding B9: a CRAM whose mapped read runs past the end of its reference sequence made
+/// noodles panic while decoding (exit 101). It is now an input error (exit 2) naming the read and
+/// leaving no output, as for SAM and BAM with -r. tests/data/past_end.{cram,fa,fa.fai} are
+/// synthetic: `samtools view -C -T past_end.fa --no-PG` (samtools 1.25) of a 20-base reference
+/// `c` with read `ok` (6M at 5) and read `over` (8M at 17, so it ends at 24), then
+/// `samtools reheader -i` to drop the header's UR path. samtools reads the file back.
+#[test]
+fn cram_read_past_its_reference_end_is_an_input_error() {
+    let dir = tmp_dir("cram_past_end");
+    let (fa, cram) = (data("past_end.fa"), data("past_end.cram"));
+    for threads in ["1", "2"] {
+        let o = run(&["score", "-@", threads, "-r", s(&fa), s(&cram)]);
+        assert_eq!(o.status.code(), Some(2), "-@ {threads}: {}", stderr(&o));
+        let err = stderr(&o);
+        assert!(
+            err.contains("over") && err.contains("ends at 24") && err.contains("has 20 bases"),
+            "-@ {threads}: {err}"
+        );
+        assert!(!err.contains("panicked"), "{err}");
+    }
+    let out = dir.join("kept.bam");
+    let o = run(&["filter", "-t", "0", "-r", s(&fa), s(&cram), "-o", s(&out)]);
+    assert_eq!(o.status.code(), Some(2), "{}", stderr(&o));
+    assert_eq!(
+        fs::read_dir(&dir).unwrap().count(),
+        0,
+        "no output or temporary file"
+    );
+}
+
 /// `score -o FILE` leaves no file when the run fails part-way, as filter does; a gzip (not BGZF)
 /// input is an input error that names bgzip.
 #[test]
