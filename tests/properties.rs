@@ -273,9 +273,10 @@ proptest! {
                 prop_assert!(other == one, "{cmd:?} -@ {t}");
             }
         }
-        // SAM to BAM: all records, unchanged (threshold below any score).
+        // SAM to BAM: all records, unchanged (threshold below any score, but above -10000, below
+        // which compat keeps no reads, as PMDtools does: docs/blackbox.md 1.7b).
         let bam = input.dir.join("in.bam");
-        run(&["filter", "--quiet", "--pmdtools-compat", "-t", "-1000000", sam, "-o", s(&bam)]);
+        run(&["filter", "--quiet", "--pmdtools-compat", "-t", "-9999", sam, "-o", s(&bam)]);
         let from_sam = scores(&run(&["score", "--quiet", "--pmdtools-compat", sam]));
         let from_bam = scores(&run(&["score", "--quiet", "--pmdtools-compat", s(&bam)]));
         prop_assert_eq!(from_bam, from_sam);

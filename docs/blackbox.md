@@ -189,6 +189,25 @@ Default mode scores hard-clipped reads (departure D3, design.md §5). `--pmdtool
 - **No `@PG` line.** The header is written only with `--header`.
 - `--writesamfield` (with `--threshold`) appends `DS:Z:<score rounded to 3 decimals>`, e.g. `DS:Z:4.637` or `DS:Z:5.03`. It replaces an existing `DS:Z`.
 
+### 1.7b Thresholds outside PMDtools' range count as not given (audit finding B7, 2026-11-22)
+PMDtools filters only when `--threshold` is **above −10000** or `--upperthreshold` is **below 1,000,000**. Otherwise it acts as if neither option was given, as without any output option: it writes no reads, and only the header with `--header`. There is no message, and the exit status is 0. Probes used one read scoring 5.03 and, where noted, one with no sites (0) and one scoring −1.05:
+
+| Options | Kept |
+|---|---|
+| `--threshold` −1000, −9999, −9999.999 | all |
+| `--threshold` −10000, −10000.001, −99999, −1000000, −1e6, −1e9 | none (also none with `--writesamfield`; header only with `--header`) |
+| `--threshold` −0.5, 0, 3, 5, 5.03, 6 | as expected from ≥ |
+| `--upperthreshold` 6, 9999, 10000, 100000, 999999, 999999.999 | the 5.03 read |
+| `--upperthreshold` 1000000, 1000000.001, 1e6, 1e9 | none |
+| `--threshold -10000 --upperthreshold 10000` | the 5.03 read (the upper bound is active) |
+| `--threshold 1 --upperthreshold 1000000` | the 5.03 read (the lower bound is active) |
+| `--threshold -10000 --upperthreshold 1000000` | none |
+| no option | none |
+
+`--printDS` does not depend on these values. Whether an inactive bound is still applied, when the other bound is active, cannot be seen: no read can score below −10000 or at 1,000,000 or more without crashing PMDtools first (1.6b, sites at z ≥ 1000).
+
+pmdshodh's default mode applies any finite bound. `filter --pmdtools-compat` now keeps no reads when neither bound is active, and prints a note on stderr. First seen in §7 (side finding), and again when B6's parity runs used `--threshold -1000000` to keep every read.
+
 ## 2. Differences between PMDtools 0.60 and the paper
 
 1. **Null model background damage.** The paper's null model has D = 0. PMDtools uses a constant 0.001.
@@ -291,6 +310,6 @@ Both files carry MD tags, so no reference was needed.
 - **Every** default-mode difference is a read whose rebuilt reference starts with G and ends with C: the CpG wrap-around in 1.6c (772 of 781 such reads; why the other 9 did not change was not investigated). No other difference exists.
 - The CIGAR reconstruction bug (1.6c) did not affect these files: they contain M/I/D/S operations, but no read combines them in the triggering way.
 
-**Side finding:** `--threshold=-1000000` makes PMDtools print no reads at all, while `--threshold=-5` and `-500` work. Very negative thresholds appear to be treated as "unset". Not investigated further.
+**Side finding:** `--threshold=-1000000` makes PMDtools print no reads at all, while `--threshold=-5` and `-500` work. Very negative thresholds appear to be treated as "unset". Probed in 1.7b (audit finding B7): the cut-off is −10000.
 
 **Not covered:** single-stranded real data (none small and public was found), CRAM input, and BAMs from aligners that produce the triggering CIGAR combinations (e.g. bwa mem with soft clips and indels).

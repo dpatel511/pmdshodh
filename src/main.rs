@@ -1567,6 +1567,19 @@ fn run_filter(args: &FilterArgs) -> Result<(), Failure> {
             )));
         }
     }
+    // PMDtools 0.60 filters only when --threshold > -10000 or --upperthreshold < 1,000,000;
+    // otherwise it acts as if neither was given and writes no reads (docs/blackbox.md 1.7b,
+    // audit finding B7). Compat does the same; default mode applies any finite bound.
+    let compat_keeps_none = settings.pmdtools_compat
+        && args.threshold.is_none_or(|t| t <= -10000.0)
+        && args.upper_threshold.is_none_or(|u| u >= 1e6);
+    if compat_keeps_none && !args.quiet {
+        eprintln!(
+            "pmdshodh filter: with --pmdtools-compat, --threshold <= -10000 and \
+             --upper-threshold >= 1000000 count as not given, as in PMDtools 0.60, so no reads \
+             are kept"
+        );
+    }
     check_range(args.summary.range)?;
     init_threads(args.model.threads)?;
     let format = output_format(&args.output, args.output_format)?;
@@ -1619,7 +1632,8 @@ fn run_filter(args: &FilterArgs) -> Result<(), Failure> {
         None,
         args.model.threads,
         |record, score| {
-            let keep = args.threshold.is_none_or(|t| score.pmds >= t)
+            let keep = !compat_keeps_none
+                && args.threshold.is_none_or(|t| score.pmds >= t)
                 && args.upper_threshold.is_none_or(|u| {
                     score.pmds < u && (score.n_sites > 0 || settings.pmdtools_compat)
                 });
