@@ -28,10 +28,12 @@ pub enum SkipReason {
     UnsupportedCigar,
     NoSequence,
     NoQualities,
+    /// `--pmdtools-compat` only: the rebuilt reference has no A, C, G or T (audit finding B5).
+    NoReferenceBases,
 }
 
 impl SkipReason {
-    pub const ALL: [SkipReason; 7] = [
+    pub const ALL: [SkipReason; 8] = [
         SkipReason::Unmapped,
         SkipReason::LowMapq,
         SkipReason::Clipped,
@@ -39,6 +41,7 @@ impl SkipReason {
         SkipReason::UnsupportedCigar,
         SkipReason::NoSequence,
         SkipReason::NoQualities,
+        SkipReason::NoReferenceBases,
     ];
 
     pub fn name(self) -> &'static str {
@@ -50,6 +53,7 @@ impl SkipReason {
             SkipReason::UnsupportedCigar => "unsupported_cigar",
             SkipReason::NoSequence => "no_sequence",
             SkipReason::NoQualities => "no_qualities",
+            SkipReason::NoReferenceBases => "no_reference_bases",
         }
     }
 }
@@ -270,6 +274,16 @@ fn score_fields(
             (refs, MdCheck::NotChecked)
         }
     };
+    // PMDtools drops a read whose rebuilt reference has no uppercase A, C, G or T ("bad reference
+    // sequence reconstruction"): all N, all `=` read bases, or lowercase MD letters (black-box
+    // probes, docs/blackbox.md 1.6e). Default mode scores such a read: it has no sites.
+    if settings.pmdtools_compat
+        && !refs
+            .iter()
+            .any(|r| matches!(r, Some(b'A' | b'C' | b'G' | b'T')))
+    {
+        return Ok(Outcome::Skipped(SkipReason::NoReferenceBases));
+    }
     // `=` read bases mean "same as the reference" (`samtools calmd -e` writes them). They are
     // resolved from `-r` for scoring; from MD alone their reference base is unknown. PMDtools
     // never counts them as C or G, and `--pmdtools-compat` keeps that. Kept records are written

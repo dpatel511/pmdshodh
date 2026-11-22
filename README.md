@@ -154,7 +154,7 @@ Each is between 0 and 1, and `--pmd-p` + `--pmd-c` (the damage rate at the read 
 
 ### JSON run summary
 
-A single file per run, versioned with `format_version` (currently `2`). It contains:
+A single file per run, versioned with `format_version` (currently `3`). It contains:
 
 | Section | Contents |
 |---|---|
@@ -167,7 +167,7 @@ A single file per run, versioned with `format_version` (currently `2`). It conta
 
 ### HTML damage report (`report`)
 
-`pmdshodh report run.json [more.json ...] -o report.html` reads summaries written by `damage -o`, `filter --summary` or `score --summary` (`format_version` 1 or 2; fields missing from version 1 are shown as "not recorded"). The JSON stays the source of truth: the report computes rates from its counts and adds nothing new. Per sample, it shows:
+`pmdshodh report run.json [more.json ...] -o report.html` reads summaries written by `damage -o`, `filter --summary` or `score --summary` (`format_version` 1 to 3; fields missing from version 1 are shown as "not recorded"). The JSON stays the source of truth: the report computes rates from its counts and adds nothing new. Per sample, it shows:
 
 - the run: input, reference, command line, library, treatment, model parameters and thresholds;
 - read counts, skipped reads by reason, flag counts and, with `-r`, MD tag agreement;
