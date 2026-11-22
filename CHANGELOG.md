@@ -11,6 +11,7 @@ Changes to the JSON run summary are listed with its `format_version`.
 
 ### Fixed
 - `--pmdtools-compat` scored reads whose SEQ is 1 base, but PMDtools 0.60 drops them silently, whatever their CIGAR operation, strand or flags. A 2-base SEQ with a single aligned base (`1S1M`, `1M1I`) is still scored (rule found by black-box probes, docs/blackbox.md 1.6g). Compat now drops them, counted as `skipped.too_short`, and leaves them out of `filter` output and the damage table, as PMDtools does. Default mode still scores them. Found by the 0.3 audit's edge-case map (docs/audit-0.3.md, B8).
+- A CRAM whose mapped read runs past the end of its reference sequence made pmdshodh panic while decoding it (exit 101), with `-@ 1` and more threads. samtools writes such files and reads them back. Such a read is now an input error (exit 2) that names it, and `filter` leaves no output, as with SAM and BAM input and `-r`. Output for valid CRAMs is unchanged. Found on a synthetic record by the 0.3 audit, while writing the reason for an untested check (docs/audit-0.3.md, B9).
 
 ## [0.3.1] - 2026-11-22
 

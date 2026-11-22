@@ -117,8 +117,10 @@ fn decode_container(
             &core,
             &external,
         )? {
-            let record = RecordBuf::try_from_alignment_record(header, &record)?;
+            // The window comes first: it checks that a mapped read ends within its reference
+            // sequence, and converting one that does not panics in noodles (audit finding B9).
             let window = window(&record, header, repository, &mut sequence, &mut out.bases)?;
+            let record = RecordBuf::try_from_alignment_record(header, &record)?;
             out.windows.push(window);
             out.records.push(record);
         }
@@ -129,7 +131,7 @@ fn decode_container(
 /// Append a mapped record's reference bases to `bases` and return their range (`None` if
 /// unmapped). `sequence` keeps the last sequence used.
 fn window(
-    record: &RecordBuf,
+    record: &impl sam::alignment::Record,
     header: &sam::Header,
     repository: &fasta::Repository,
     sequence: &mut Option<(usize, Arc<fasta::record::Sequence>)>,
@@ -161,8 +163,9 @@ fn window(
     let bases_of = sequence.as_ref().unwrap().1.as_ref().as_ref();
     let (from, to) = (usize::from(start) - 1, usize::from(start) - 1 + span);
     if to > bases_of.len() {
+        let read = Record::name(record).map_or_else(|| "*".into(), |n| n.to_string());
         return Err(invalid(format!(
-            "alignment ends at {to} but reference sequence {name} has {} bases",
+            "read {read}: alignment ends at {to} but reference sequence {name} has {} bases",
             bases_of.len()
         )));
     }
