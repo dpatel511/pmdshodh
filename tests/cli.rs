@@ -635,6 +635,65 @@ fn upper_threshold_drops_reads_without_evidence_except_in_compat() {
     assert_eq!(kept(&["--pmdtools-compat"]), ["no_sites", "one_match"]);
 }
 
+/// Audit finding B7: PMDtools 0.60 filters only when `--threshold` is above -10000 or
+/// `--upperthreshold` is below 1,000,000. Otherwise it acts as if neither was given and writes no
+/// reads (docs/blackbox.md 1.7b; probes 2026-11-22). `--pmdtools-compat` now does the same, with
+/// a stderr note; default mode applies any finite bound.
+#[test]
+fn compat_filter_ignores_thresholds_outside_pmdtools_range() {
+    let dir = tmp_dir("threshold_range");
+    let input = dir.join("in.sam");
+    let (a, q) = ("A".repeat(29), "I".repeat(30));
+    fs::write(
+        &input,
+        format!(
+            "@SQ\tSN:r\tLN:1000\ndamaged\t0\tr\t100\t60\t30M\t*\t0\t0\tT{a}\t{q}\tMD:Z:0C29\n\
+             no_sites\t0\tr\t200\t60\t30M\t*\t0\t0\tA{a}\t{q}\tMD:Z:30\n"
+        ),
+    )
+    .unwrap();
+    let out = dir.join("kept.sam");
+    let filter = |bounds: &[&str]| -> (Vec<String>, String) {
+        let mut args = vec!["filter"];
+        args.extend_from_slice(bounds);
+        args.extend([input.to_str().unwrap(), "-o", out.to_str().unwrap()]);
+        let o = run(&args);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        let names = read_records(&out).1.iter().map(name).collect();
+        (names, String::from_utf8_lossy(&o.stderr).into_owned())
+    };
+    let compat = |bounds: &[&str]| filter(&[&["--pmdtools-compat"][..], bounds].concat()).0;
+    // PMDtools 0.60 keeps these reads with the same options.
+    let both = ["damaged", "no_sites"];
+    assert_eq!(compat(&["--threshold=-9999.999"]), both);
+    assert_eq!(compat(&["--upper-threshold", "999999.999"]), both);
+    assert_eq!(
+        compat(&["--threshold=-10000", "--upper-threshold", "10"]),
+        both
+    );
+    assert_eq!(
+        compat(&["-t", "1", "--upper-threshold", "1e6"]),
+        ["damaged"]
+    );
+    let none: [&str; 0] = [];
+    for bounds in [
+        &["--threshold=-10000"][..],
+        &["--threshold=-1e6"],
+        &["--upper-threshold", "1e6"],
+        &["--threshold=-10000", "--upper-threshold", "1e6"],
+    ] {
+        assert_eq!(compat(bounds), none, "{bounds:?}");
+    }
+    let (_, err) = filter(&["--pmdtools-compat", "--threshold=-1e6"]);
+    assert!(err.contains("no reads are kept"), "{err}");
+    // Default mode applies the bounds as given.
+    assert_eq!(filter(&["--quiet", "--threshold=-1e6"]).0, both);
+    assert_eq!(
+        filter(&["--quiet", "--upper-threshold", "1e6"]).0,
+        ["damaged"]
+    );
+}
+
 // BAM records are read through a BAM-specific path (reads::process_bam); it must give the same
 // results as the generic path used for SAM.
 #[test]

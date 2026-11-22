@@ -229,6 +229,7 @@ pmdshodh corrects these PMDtools behaviours by default. Use `--pmdtools-compat` 
 | Mapped read without an MD tag | Dropped silently | Error (exit 2); with `-r`, scored from the reference |
 | MD string without a `0` after a deletion (as written by MALT) | Misparsed silently | Parsed correctly |
 | Hard-clipped reads | Dropped | Scored |
+| `--threshold` ≤ −10000 (e.g. `-1000000` to keep every read), unless `--upperthreshold` is below 1,000,000; or `--upperthreshold` ≥ 1,000,000 alone | Counted as not given: no reads written, no message | Applied as given |
 | Existing `DS:Z` tag, or `DS:Z:` text in qualities | Crash | Handled |
 | Input with only a header | Crash | Empty output, exit 0 |
 | BAM without its end-of-file marker (cut at a block boundary) | `samtools view` warns and passes on the reads before the cut | Error (exit 2), no output file |

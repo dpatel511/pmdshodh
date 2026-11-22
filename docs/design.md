@@ -122,6 +122,7 @@ Default = PMDtools behaviour, except where marked. Every departure gets a regres
 | Hard-clipped read (`H`) | dropped, stderr message, whatever its flags | scored (hard clips are not in SEQ, so z is unaffected); `--pmdtools-compat` drops it, counted as `unsupported_cigar` (audit finding B6, blackbox.md 1.6f) | **yes** (D3) |
 | 1-bp read | dropped silently | scored | **yes** (trivial) |
 | Read with no informative sites | PMDS 0, kept at threshold ≤ 0 and by `--upperthreshold` | PMDS 0, counted as `no_informative_sites`; kept at `--threshold` ≤ 0, but **not kept by `--upper-threshold`** (no evidence of being undamaged); `--pmdtools-compat` keeps it (agreed 2026-11-13) | **yes** (`--upper-threshold` only) |
+| `--threshold` ≤ −10000 with no `--upperthreshold` below 1,000,000 (or `--upperthreshold` ≥ 1,000,000 alone) | counted as not given: no reads written, no message (blackbox.md 1.7b) | the bounds are applied as given, so `-t -1e6` keeps every scored read; `filter --pmdtools-compat` keeps none and prints a note (audit finding B7, 2026-11-22) | **yes** |
 | Secondary, supplementary, duplicate, QC-fail, paired mates | all scored | all scored by default, counted in summary; `--skip-flags` to drop | no (D2) |
 | Existing `DS:Z` tag in input | **crash** unless `--writesamfield` | left untouched; scoring unaffected | **yes**, fixes a crash |
 | `DS:Z:` text inside QUAL (issue #9) | crash | not an issue (field-aware parsing) | **yes**, fixes #9 |
