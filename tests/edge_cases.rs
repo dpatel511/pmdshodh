@@ -1,6 +1,7 @@
 //! Edge cases from the 0.3 audit coverage map (docs/audit-0.3.md §3.1, group a): read filters and
 //! skip reasons, full UDG from the command line, `=`/`X` CIGARs, malformed MD tags, reference
-//! checks, damaged BGZF input and command-line errors.
+//! checks, damaged BGZF input and command-line errors. Also the audit's findings, and the tests
+//! its edge-case matrix lacked (§4, mapped in §4.5).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -615,4 +616,503 @@ fn compat_drops_hard_clipped_reads_like_pmdtools() {
     let j = damage_json(&input, &[]);
     assert_eq!(j["reads"]["skipped"]["unsupported_cigar"], 0);
     assert_eq!(j["reads"]["skipped"]["unmapped"], 1);
+}
+
+// ---- Edge-case matrix (docs/audit-0.3.md §4, map in §4.5) ----
+
+/// `score` output as (name, score, sites), one per scored read.
+fn scores(args: &[&str]) -> Vec<(String, f64, u64)> {
+    let o = run(&[&["score", "--quiet"][..], args].concat());
+    assert!(o.status.success(), "{args:?}: {}", stderr(&o));
+    String::from_utf8(o.stdout)
+        .unwrap()
+        .lines()
+        .skip(1)
+        .map(|l| {
+            let f: Vec<&str> = l.split('\t').collect();
+            (
+                f[0].to_string(),
+                f[2].parse().unwrap(),
+                f[3].parse().unwrap(),
+            )
+        })
+        .collect()
+}
+
+/// Non-header lines of a SAM file.
+fn records_of(path: &Path) -> Vec<String> {
+    fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .filter(|l| !l.starts_with('@'))
+        .map(str::to_string)
+        .collect()
+}
+
+/// §4.1 layout: paired mates (both mapped, one unmapped, mate on another reference), secondary,
+/// supplementary, duplicate and QC-fail reads are all scored, as PMDtools scores them, and counted
+/// by flag. Filter writes them unchanged, including RNEXT and PNEXT.
+#[test]
+fn every_read_layout_is_scored_counted_and_kept_unchanged() {
+    let dir = tmp_dir("layouts");
+    let r = |name: &str, flag: u16, rnext: &str, pnext: u32| {
+        format!(
+            "{name}\t{flag}\tc\t11\t37\t10M\t{rnext}\t{pnext}\t0\tTAAAAAAAAA\tIIIIIIIIII\tMD:Z:0C9"
+        )
+    };
+    let records = [
+        r("single", 0, "*", 0),
+        r("mate1", 99, "=", 11),
+        r("mate2", 147, "=", 11),
+        r("mate_unmapped", 73, "=", 11),
+        r("mate_elsewhere", 65, "d", 500),
+        r("secondary", 256, "*", 0),
+        r("supplementary", 2048, "*", 0),
+        r("duplicate", 1024, "*", 0),
+        r("qc_fail", 512, "*", 0),
+    ];
+    let mut text = String::from("@HD\tVN:1.6\n@SQ\tSN:c\tLN:1000\n@SQ\tSN:d\tLN:1000\n");
+    for rec in &records {
+        text.push_str(rec);
+        text.push('\n');
+    }
+    let input = dir.join("layouts.sam");
+    fs::write(&input, &text).unwrap();
+    for mode in [&[][..], &["--pmdtools-compat"]] {
+        let got = scores(&[mode, &[s(&input)]].concat());
+        assert_eq!(got.len(), records.len(), "{mode:?}");
+        assert!(got.iter().all(|(_, _, n)| *n == 1), "{mode:?}: {got:?}");
+    }
+    let flags = damage_json(&input, &[])["reads"]["flags"].clone();
+    for (flag, n) in [
+        ("paired", 4),
+        ("reverse", 1),
+        ("secondary", 1),
+        ("supplementary", 1),
+        ("duplicate", 1),
+        ("qc_fail", 1),
+    ] {
+        assert_eq!(flags[flag], n, "{flag}: {flags}");
+    }
+    let out = dir.join("kept.sam");
+    let o = run(&["filter", "--quiet", "-t", "0", s(&input), "-o", s(&out)]);
+    assert!(o.status.success(), "{}", stderr(&o));
+    assert_eq!(records_of(&out), records);
+}
+
+/// §4.1 length: a 1-bp read is scored by default (PMDtools drops it: docs/design.md §5), and a
+/// site 1,200 bp from the 5′ end gets a finite, small score (PMDtools crashes on any site at
+/// z >= 1000).
+#[test]
+fn one_base_and_long_reads_are_scored_by_default() {
+    let dir = tmp_dir("lengths");
+    let input = dir.join("lengths.sam");
+    fs::write(
+        &input,
+        format!(
+            "@SQ\tSN:c\tLN:5000\none\t0\tc\t11\t37\t1M\t*\t0\t0\tT\tI\tMD:Z:0C0\n\
+             long\t0\tc\t1\t37\t1200M\t*\t0\t0\t{}T\t{}\tMD:Z:1199C0\n",
+            "A".repeat(1199),
+            "I".repeat(1200)
+        ),
+    )
+    .unwrap();
+    let got = scores(&[s(&input)]);
+    assert_eq!(got[0], ("one".to_string(), 5.029717285061267, 1));
+    let (name, pmds, n) = &got[1];
+    assert_eq!((name.as_str(), *n), ("long", 1));
+    assert!(pmds.is_finite() && *pmds > 0.0 && *pmds < 5.0, "{pmds}");
+}
+
+/// §4.1 SEQ: lowercase SEQ bases (SAM only) are read as uppercase in both modes. PMDtools does not
+/// recognise them (`taaa` over MD `0C3` scores 0.0, 2026-11-22); compat does not reproduce that
+/// (a documented limitation, docs/design.md §5). IUPAC and N read bases are never damage: PMDtools
+/// scores these reads 5.0297 from their one C site, as pmdshodh does.
+#[test]
+fn lowercase_iupac_and_n_read_bases() {
+    let dir = tmp_dir("seq_bases");
+    let r = |name: &str, seq: &str, md: &str| {
+        format!("{name}\t0\tc\t11\t37\t4M\t*\t0\t0\t{seq}\tIIII\tMD:Z:{md}")
+    };
+    let input = sam(
+        &dir,
+        "bases.sam",
+        &[
+            &r("upper", "TAAA", "0C3"),
+            &r("lower", "taaa", "0C3"),
+            &r("iupac", "TRYA", "0C0A0A1"),
+            &r("n", "TNNA", "0C0A0A1"),
+        ],
+    );
+    for mode in [&[][..], &["--pmdtools-compat"]] {
+        let got = scores(&[mode, &[s(&input)]].concat());
+        assert_eq!(got.len(), 4, "{mode:?}");
+        for (name, pmds, n) in &got {
+            assert_eq!((*pmds, *n), (5.029717285061267, 1), "{mode:?} {name}");
+        }
+    }
+}
+
+/// §4.1 CIGAR and MD: a mapped read with CIGAR `*`, and one with an empty MD tag, are input
+/// errors in both modes. PMDtools scores the first from its MD (5.0297) and drops the second
+/// silently (2026-11-22); both are listed in docs/design.md §5.
+#[test]
+fn star_cigar_and_empty_md_on_mapped_reads_are_input_errors() {
+    let dir = tmp_dir("star_cigar");
+    let star = sam(
+        &dir,
+        "star.sam",
+        &["r1\t0\tc\t11\t37\t*\t*\t0\t0\tTAAA\tIIII\tMD:Z:0C3"],
+    );
+    let empty = sam(
+        &dir,
+        "empty_md.sam",
+        &["r1\t0\tc\t11\t37\t4M\t*\t0\t0\tTAAA\tIIII\tMD:Z:"],
+    );
+    for mode in [&[][..], &["--pmdtools-compat"]] {
+        let star_args = [&["score"][..], mode, &[s(&star)]].concat();
+        input_error(&star_args, "CIGAR covers 0 read bases");
+        let empty_args = [&["score"][..], mode, &[s(&empty)]].concat();
+        input_error(&empty_args, "MD is shorter than the CIGAR");
+    }
+}
+
+/// §4.1 position: reads at the first and last reference base, and on a reference of length 1,
+/// score the same from MD and from `-r`, in default and compat mode.
+#[test]
+fn reads_at_reference_ends_score_the_same_from_md_and_reference() {
+    let dir = tmp_dir("reference_ends");
+    let fasta = dir.join("ref.fa");
+    fs::write(&fasta, ">c\nCAAAAAAAAC\n>one\nC\n").unwrap();
+    fs::write(
+        dir.join("ref.fa.fai"),
+        "c\t10\t3\t10\t11\none\t1\t19\t1\t2\n",
+    )
+    .unwrap();
+    let input = dir.join("ends.sam");
+    fs::write(
+        &input,
+        "@SQ\tSN:c\tLN:10\n@SQ\tSN:one\tLN:1\n\
+         start\t0\tc\t1\t37\t4M\t*\t0\t0\tTAAA\tIIII\tMD:Z:0C3\n\
+         end\t16\tc\t7\t37\t4M\t*\t0\t0\tAAAT\tIIII\tMD:Z:3C0\n\
+         length_1\t0\tone\t1\t37\t1M\t*\t0\t0\tT\tI\tMD:Z:0C0\n",
+    )
+    .unwrap();
+    let md = scores(&[s(&input)]);
+    assert_eq!(md.len(), 3);
+    assert!(md.iter().all(|(_, _, n)| *n == 1), "{md:?}");
+    assert_eq!(scores(&["-r", s(&fasta), s(&input)]), md);
+    // The 1-bp read is left out of compat (PMDtools drops 1-bp reads).
+    let compat = |extra: &[&str]| {
+        let mut v = scores(&[&["--pmdtools-compat"][..], extra, &[s(&input)]].concat());
+        v.retain(|(name, _, _)| name != "length_1");
+        v
+    };
+    assert_eq!(compat(&["-r", s(&fasta)]), compat(&[]));
+    assert_eq!(compat(&[]), md[..2]);
+}
+
+/// §4.2 model: CpG context is taken along SEQ, skipping deleted reference bases, in both modes,
+/// as in PMDtools (docs/blackbox.md 1.6b): a C, a deleted A and then a G count as CpG. PMDtools
+/// 0.60 gives 5.0030 (2 sites) without treatment, with --CpG and with --UDGhalf (2026-11-22).
+#[test]
+fn cpg_context_skips_deleted_reference_bases() {
+    let dir = tmp_dir("cpg_deletion");
+    let input = sam(
+        &dir,
+        "cpg.sam",
+        &["r1\t0\tc\t11\t37\t1M1D9M\t*\t0\t0\tTGAAAAAAAA\tIIIIIIIIII\tMD:Z:0C0^A9"],
+    );
+    for treatment in [&[][..], &["--CpG"], &["--UDGhalf"]] {
+        for mode in [&[][..], &["--pmdtools-compat"]] {
+            let got = scores(&[treatment, mode, &[s(&input)]].concat());
+            assert_eq!(got[0].2, 2, "{treatment:?} {mode:?}");
+            assert!(
+                (got[0].1 - 5.00304487236408).abs() < 1e-12,
+                "{treatment:?} {mode:?}: {}",
+                got[0].1
+            );
+        }
+    }
+}
+
+/// §4.2 parameters: `-q` counts a base at exactly its value and ignores one below; `-q` and `-m`
+/// take 0 to 255; the priors take 0 to 1; `--pmd-p 0` and `--pmd-c 0` are accepted.
+#[test]
+fn quality_and_parameter_boundaries() {
+    let dir = tmp_dir("boundaries");
+    // Base quality 20 ('5') at the damaged C; MAPQ 37 and 255.
+    let input = sam(
+        &dir,
+        "q.sam",
+        &[
+            "q20\t0\tc\t11\t37\t4M\t*\t0\t0\tTAAA\t5III\tMD:Z:0C3",
+            "mapq255\t0\tc\t11\t255\t4M\t*\t0\t0\tTAAA\tIIII\tMD:Z:0C3",
+        ],
+    );
+    let sites = |args: &[&str]| -> Vec<(String, u64)> {
+        scores(&[args, &[s(&input)]].concat())
+            .into_iter()
+            .map(|(name, _, n)| (name, n))
+            .collect()
+    };
+    let pair = |a: u64, b: u64| vec![("q20".to_string(), a), ("mapq255".to_string(), b)];
+    assert_eq!(sites(&["-q", "20"]), pair(1, 1));
+    assert_eq!(sites(&["-q", "21"]), pair(0, 1));
+    assert_eq!(sites(&["-q", "0"]), pair(1, 1));
+    assert_eq!(sites(&["-q", "255"]), pair(0, 0));
+    assert_eq!(sites(&["-m", "0"]), pair(1, 1));
+    assert_eq!(sites(&["-m", "255"]), vec![("mapq255".to_string(), 1)]);
+    for value in ["0", "1"] {
+        for prior in ["--pi-ancient", "--pi-contamination"] {
+            assert_eq!(sites(&[prior, value]).len(), 2, "{prior} {value}");
+        }
+    }
+    assert_eq!(sites(&["--pmd-p", "0"]).len(), 2);
+    assert_eq!(sites(&["--pmd-c", "0"]).len(), 2);
+    for (args, says) in [
+        (&["--pi-ancient", "1.1"][..], "between 0 and 1"),
+        (&["--pi-contamination=-0.1"], "between 0 and 1"),
+        (&["-q", "256"], "256"),
+        (&["-m", "256"], "256"),
+    ] {
+        let o = run(&[&["score"][..], args, &[s(&input)]].concat());
+        assert_eq!(o.status.code(), Some(2), "{args:?}");
+        assert!(stderr(&o).contains(says), "{args:?}: {}", stderr(&o));
+    }
+}
+
+/// §4.2 thresholds: a read scoring exactly `--threshold` is kept, and one scoring exactly
+/// `--upper-threshold` is not, as in PMDtools (docs/blackbox.md 1.7).
+#[test]
+fn reads_exactly_at_a_threshold() {
+    let dir = tmp_dir("threshold_exact");
+    let input = sam(
+        &dir,
+        "t.sam",
+        &["r1\t0\tc\t11\t37\t10M\t*\t0\t0\tTAAAAAAAAA\tIIIIIIIIII\tMD:Z:0C9"],
+    );
+    let score = scores(&[s(&input)])[0].1.to_string();
+    let out = dir.join("kept.sam");
+    let kept = |bound: &str| {
+        let o = run(&["filter", "--quiet", bound, &score, s(&input), "-o", s(&out)]);
+        assert!(o.status.success(), "{}", stderr(&o));
+        records_of(&out).len()
+    };
+    assert_eq!(kept("--threshold"), 1);
+    assert_eq!(kept("--upper-threshold"), 0);
+}
+
+/// §4.2 output: an existing DS:Z tag is left untouched without `--tag` (PMDtools crashes on it
+/// unless --writesamfield), and `--tag` replaces an existing tag of its name, leaving one.
+#[test]
+fn existing_score_tags_are_kept_or_replaced() {
+    let dir = tmp_dir("existing_tags");
+    let input = sam(
+        &dir,
+        "tags.sam",
+        &["r1\t0\tc\t11\t37\t10M\t*\t0\t0\tTAAAAAAAAA\tIIIIIIIIII\tMD:Z:0C9\tDS:Z:9.999\tpm:f:1.5"],
+    );
+    let out = dir.join("kept.sam");
+    let kept = |extra: &[&str]| -> String {
+        let fixed = ["filter", "--quiet", "-t", "0"];
+        let o = run(&[&fixed[..], extra, &[s(&input), "-o", s(&out)]].concat());
+        assert!(o.status.success(), "{}", stderr(&o));
+        records_of(&out).remove(0)
+    };
+    let plain = kept(&[]);
+    assert!(plain.ends_with("\tDS:Z:9.999\tpm:f:1.5"), "{plain}");
+    let ds = kept(&["--tag", "--tag-name", "DS"]);
+    assert_eq!(ds.matches("DS:Z:").count(), 1, "{ds}");
+    assert!(
+        ds.contains("\tDS:Z:5.03") && ds.contains("\tpm:f:1.5"),
+        "{ds}"
+    );
+    let pm = kept(&["--tag"]);
+    assert_eq!(pm.matches("pm:f:").count(), 1, "{pm}");
+    assert!(
+        pm.contains("\tDS:Z:9.999") && !pm.contains("pm:f:1.5"),
+        "{pm}"
+    );
+}
+
+/// §4.3 damage: `-n` 0, 1 and more than the input; `--range 1`; header-only input; and an input
+/// whose reads are all skipped, which still gives a summary that `report` renders.
+#[test]
+fn damage_limits_and_empty_runs() {
+    let dir = tmp_dir("damage_limits");
+    let input = sam(
+        &dir,
+        "two.sam",
+        &[
+            "r1\t0\tc\t11\t37\t10M\t*\t0\t0\tTAAAAAAAAA\tIIIIIIIIII\tMD:Z:0C9",
+            "r2\t0\tc\t21\t37\t10M\t*\t0\t0\tTAAAAAAAAA\tIIIIIIIIII\tMD:Z:0C9",
+        ],
+    );
+    for (n, want) in [("0", 0), ("1", 1), ("100", 2)] {
+        let j = damage_json(&input, &["-n", n]);
+        assert_eq!(j["reads"]["input"], want, "-n {n}");
+        assert_eq!(j["reads"]["scored"], want, "-n {n}");
+    }
+    let j = damage_json(&input, &["--range", "1"]);
+    assert_eq!(j["damage"]["range"], 1);
+    assert_eq!(
+        j["damage"]["five_prime"]["C"]["T"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let header_only = sam(&dir, "header.sam", &[]);
+    let skipped = sam(
+        &dir,
+        "skipped.sam",
+        &[
+            "u1\t4\t*\t0\t0\t*\t*\t0\t0\tTAAA\tIIII",
+            "u2\t4\t*\t0\t0\t*\t*\t0\t0\tTAAA\tIIII",
+        ],
+    );
+    for (input, reads) in [(&header_only, 0), (&skipped, 2)] {
+        let summary = dir.join("s.json");
+        let o = run(&["damage", "--quiet", s(input), "-o", s(&summary)]);
+        assert!(o.status.success(), "{}", stderr(&o));
+        let j: serde_json::Value = serde_json::from_slice(&fs::read(&summary).unwrap()).unwrap();
+        assert_eq!(j["reads"]["input"], reads, "{}", s(input));
+        assert_eq!(j["reads"]["scored"], 0, "{}", s(input));
+        let page = dir.join("r.html");
+        let o = run(&["report", "--quiet", s(&summary), "-o", s(&page)]);
+        assert!(o.status.success(), "{}", stderr(&o));
+        assert!(!fs::read_to_string(&page).unwrap().contains("NaN"));
+    }
+}
+
+/// §4.3 report: 50 samples, a Unicode and a 200-character file name, `--range 1000`, a UDG-half
+/// compat summary and a CRAM summary in one report; it is byte-identical when made twice.
+#[test]
+fn report_on_many_and_unusual_summaries() {
+    let dir = tmp_dir("report_unusual");
+    let fixture = data("reads_random.sam");
+    let unicode = dir.join("échantillon_日本.sam");
+    let long = dir.join(format!("{}.sam", "x".repeat(200)));
+    fs::copy(&fixture, &unicode).unwrap();
+    fs::copy(&fixture, &long).unwrap();
+    let summary = |name: &str, args: &[&str]| -> PathBuf {
+        let out = dir.join(name);
+        let o = run(&[&["damage", "--quiet"][..], args, &["-o", s(&out)]].concat());
+        assert!(o.status.success(), "{}", stderr(&o));
+        out
+    };
+    let (fa, cram) = (data("pairs.fa"), data("pairs.cram"));
+    let mut inputs = vec![
+        summary("unicode.json", &[s(&unicode)]),
+        summary("long.json", &[s(&long)]),
+        summary("range.json", &["--range", "1000", s(&fixture)]),
+        summary("cram.json", &["-r", s(&fa), s(&cram)]),
+        summary(
+            "half.json",
+            &["--pmdtools-compat", "--UDGhalf", s(&fixture)],
+        ),
+    ];
+    for i in inputs.len()..50 {
+        let p = dir.join(format!("copy{i}.json"));
+        fs::copy(&inputs[4], &p).unwrap();
+        inputs.push(p);
+    }
+    let page = |name: &str| {
+        let out = dir.join(name);
+        let mut args = vec!["report", "--quiet"];
+        args.extend(inputs.iter().map(|p| s(p)));
+        args.extend(["-o", s(&out)]);
+        let o = run(&args);
+        assert!(o.status.success(), "{}", stderr(&o));
+        fs::read(out).unwrap()
+    };
+    let (a, b) = (page("a.html"), page("b.html"));
+    assert_eq!(a, b, "byte-identical");
+    let html = String::from_utf8(a).unwrap();
+    assert!(html.contains("échantillon_日本.sam"));
+    assert!(html.contains(&"x".repeat(200)));
+    assert_eq!(
+        html.matches("<section").count(),
+        51,
+        "50 samples and the overlays"
+    );
+    assert!(!html.contains("NaN"));
+}
+
+/// §4.4 command line: an unknown option, an option given twice, and an option missing its value
+/// are usage errors (exit 2) in every subcommand, with nothing on stdout.
+#[test]
+fn unknown_repeated_and_valueless_options_are_usage_errors() {
+    let input = data("reads_random.sam");
+    let input = s(&input);
+    for cmd in [
+        &["score"][..],
+        &["damage"],
+        &["filter", "-t", "3", "-o", "x.bam"],
+    ] {
+        for args in [&["--bogus"][..], &["-q", "1", "-q", "2"], &["--range"]] {
+            let o = run(&[cmd, args, &[input]].concat());
+            assert_eq!(o.status.code(), Some(2), "{cmd:?} {args:?}");
+            assert!(o.stdout.is_empty(), "{cmd:?} {args:?}");
+        }
+    }
+    let o = run(&["report", "--bogus", "x.json"]);
+    assert_eq!(o.status.code(), Some(2));
+}
+
+/// §4.1 CIGAR: an insertion or deletion right after a soft clip. Compat equals PMDtools 0.60
+/// (`--printDS`, 2026-11-22: 4.0254, 0.0 and 0.0). Default mode places the deletion correctly
+/// (docs/blackbox.md 1.6c), so the C→T scores as the same read without the deletion does.
+#[test]
+fn indels_next_to_a_soft_clip() {
+    let dir = tmp_dir("clip_indel");
+    let r = |name: &str, flag: u16, cigar: &str, seq: &str, md: &str| {
+        let q = "I".repeat(seq.len());
+        format!("{name}\t{flag}\tc\t11\t37\t{cigar}\t*\t0\t0\t{seq}\t{q}\tMD:Z:{md}")
+    };
+    let input = sam(
+        &dir,
+        "clip_indel.sam",
+        &[
+            &r("s_i", 0, "2S1I8M", "GGATAAAAAAA", "0C7"),
+            &r("s_d", 0, "2S1D8M", "GGTAAAAAAA", "^A0C7"),
+            &r("s_d_rev", 16, "2S1D8M", "GGAAAAAAAT", "^A7C0"),
+            &r("no_d", 0, "2S8M", "GGTAAAAAAA", "0C7"),
+        ],
+    );
+    let values = |mode: &[&str]| -> Vec<f64> {
+        scores(&[mode, &[s(&input)]].concat())
+            .into_iter()
+            .map(|(_, p, _)| p)
+            .collect()
+    };
+    let compat = values(&["--pmdtools-compat"]);
+    assert_eq!(compat[..3], [4.0254364447734625, 0.0, 0.0]);
+    let default = values(&[]);
+    assert_eq!(default[0], compat[0]);
+    assert_eq!(default[1], default[3], "deletion leaves z unchanged");
+    assert!(default[2] > 0.0);
+}
+
+/// §4.4 outputs: `-o /dev/stdout` writes in place, as `-o -` does (Unix only).
+#[cfg(unix)]
+#[test]
+fn output_to_dev_stdout() {
+    let input = data("reads_random.sam");
+    // The @PG line records the command line, so it differs between the two.
+    let sam_without_pg = |out: &str| -> String {
+        let fixed = ["filter", "--quiet", "-t", "3", "--output-format", "sam"];
+        let o = run(&[&fixed[..], &[s(&input), "-o", out]].concat());
+        assert!(o.status.success(), "{out}: {}", stderr(&o));
+        String::from_utf8(o.stdout)
+            .unwrap()
+            .lines()
+            .filter(|l| !l.starts_with("@PG"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let via_dev = sam_without_pg("/dev/stdout");
+    assert!(via_dev.lines().any(|l| !l.starts_with('@')), "has records");
+    assert_eq!(via_dev, sam_without_pg("-"));
 }
