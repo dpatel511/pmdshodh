@@ -152,6 +152,23 @@ PMDtools drops a read, printing `bad reference sequence reconstruction: <rebuilt
 
 Such reads have no C or G site in any mode, so pmdshodh's default mode scores them 0 from 0 sites. `--pmdtools-compat` drops them, counted as `skipped.no_reference_bases`. This also reproduces PMDtools dropping reads made only of `=` bases.
 
+### 1.6f Hard-clipped reads are dropped whatever their flags (audit finding B6, 2026-11-22)
+PMDtools drops every read with an `H` in its CIGAR (1.6), printing `cigar found: <CIGAR> PMDtools only supports cigar operations M, I, S and D, the alignment has been excluded` to stderr, exit 0. Flags play no part. Probes run one read each (30 bp, a terminal C→T, MD `0C29`) through `--printDS`:
+
+| Probe | Outcome |
+|---|---|
+| `30M` with flag 0, 16, 256, 2048, 2064, 2304, 65, 147, or 2131, 2147, 2195, 2211 (supplementary, paired) | scored (5.0297) |
+| `3H30M`, `30M3H`, `1H30M`, `43H30M`, `3H30M3H`, each with flag 0, 16, 2048, 2147 and 2195 | dropped, message |
+| `3H2S28M`, `3H10M1D20M`, `0H30M` | dropped, message |
+| `3H30M` with MD all match, at position 1, or with flag 4 (placed unmapped, 1.6 and B4) | dropped, message |
+| `30M3H` with `--noclips` | dropped, no message |
+| `3H30M` with a scored read, `--threshold -100` | only the other read is written |
+| `3H30M` added to a read, `--deamination` | table unchanged |
+
+On the aligner sweep's `bwa_mem_pe.bam`, the file's only 18 supplementary records are all hard-clipped (`43H33M`, `31M45H` and similar, flags 2131, 2147, 2195, 2211). PMDtools drops all 18 with this message; they were the 18 reads compat scored and PMDtools did not.
+
+Default mode scores hard-clipped reads (departure D3, design.md §5). `--pmdtools-compat` drops them, counted as `skipped.unsupported_cigar` as for `N` and `P`, or as `skipped.clips` with `--no-clips`.
+
 ### 1.6d Damage table (`--deamination`), found in build step 5
 - Rows are z = 0…range−1 from the terminal base. Columns:
   - CT CA CG CC: the fraction of read bases A/C/G/T at reference C, from the **5′ end**;

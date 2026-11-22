@@ -201,6 +201,11 @@ fn score_fields(
     if filters.no_clips && has(|op| matches!(op, CigarOp::SoftClip(_) | CigarOp::HardClip(_))) {
         return Ok(Outcome::Skipped(SkipReason::Clipped));
     }
+    // PMDtools drops every read with a hard clip, whatever its flags, with the message it gives
+    // for `N` and `P` (docs/blackbox.md 1.6f, audit finding B6). Default mode scores them (D3).
+    if settings.pmdtools_compat && has(|op| matches!(op, CigarOp::HardClip(_))) {
+        return Ok(Outcome::Skipped(SkipReason::UnsupportedCigar));
+    }
     if filters.no_indels && has(|op| matches!(op, CigarOp::Insertion(_) | CigarOp::Deletion(_))) {
         return Ok(Outcome::Skipped(SkipReason::Indel));
     }

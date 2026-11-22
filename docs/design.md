@@ -119,7 +119,7 @@ Default = PMDtools behaviour, except where marked. Every departure gets a regres
 | Mapped read without MD | **dropped silently**, exit 0 | **error, exit 2** (CLAUDE.md §7) | **yes** |
 | MD without the `0` separator after a deletion (MALT, issue #5) | misparsed silently | parsed using the CIGAR deletion length; correct score | **yes**, fixes #5 |
 | MD that contradicts the CIGAR (length or base) | scored silently | error, exit 2 | **yes** |
-| Hard-clipped read (`H`) | dropped, stderr message | scored (hard clips are not in SEQ, so z is unaffected) | **yes** (D3) |
+| Hard-clipped read (`H`) | dropped, stderr message, whatever its flags | scored (hard clips are not in SEQ, so z is unaffected); `--pmdtools-compat` drops it, counted as `unsupported_cigar` (audit finding B6, blackbox.md 1.6f) | **yes** (D3) |
 | 1-bp read | dropped silently | scored | **yes** (trivial) |
 | Read with no informative sites | PMDS 0, kept at threshold ≤ 0 and by `--upperthreshold` | PMDS 0, counted as `no_informative_sites`; kept at `--threshold` ≤ 0, but **not kept by `--upper-threshold`** (no evidence of being undamaged); `--pmdtools-compat` keeps it (agreed 2026-11-13) | **yes** (`--upper-threshold` only) |
 | Secondary, supplementary, duplicate, QC-fail, paired mates | all scored | all scored by default, counted in summary; `--skip-flags` to drop | no (D2) |
