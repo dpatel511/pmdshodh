@@ -562,3 +562,57 @@ fn compat_drops_reads_without_reference_bases_like_pmdtools() {
     let j = damage_json(&default_input, &[]);
     assert_eq!(j["reads"]["skipped"]["no_reference_bases"], 0);
 }
+
+/// Audit finding B6: PMDtools drops every read with a hard clip (`H`) in its CIGAR, whatever its
+/// flags, strand or other operations, printing "only supports cigar operations M, I, S and D"
+/// (docs/blackbox.md 1.6f; PMDtools 0.60 probes, 2026-11-22). Default mode scores them (D3,
+/// docs/design.md §5), and so did `--pmdtools-compat`. Compat now drops them as
+/// `unsupported_cigar`, as PMDtools does for `N` and `P`; with `--no-clips` they count as `clips`.
+#[test]
+fn compat_drops_hard_clipped_reads_like_pmdtools() {
+    let dir = tmp_dir("hard_clips");
+    let rec = |name: &str, flag: u16, cigar: &str, seq: &str, md: &str| {
+        let q = "I".repeat(seq.len());
+        format!("{name}\t{flag}\tc\t11\t37\t{cigar}\t*\t0\t0\t{seq}\t{q}\tMD:Z:{md}")
+    };
+    let t = "TAAAAAAAAA";
+    let dropped = [
+        rec("lead", 0, "3H10M", t, "0C9"),
+        rec("trail", 0, "10M3H", t, "0C9"),
+        rec("both", 16, "1H10M43H", t, "0C9"),
+        rec("supp_r1", 2147, "43H10M", t, "0C9"),
+        rec("supp_r2", 2195, "10M45H", t, "0C9"),
+        rec("with_s", 0, "3H2S8M", "GGTAAAAAAA", "0C7"),
+        rec("with_d", 0, "3H5M1D5M", t, "0C4^A5"),
+        // Flagged unmapped but placed: compat scores these from MD (B4), but not with `H`.
+        rec("placed", 4, "3H10M", t, "0C9"),
+    ];
+    let kept = [
+        rec("plain", 0, "10M", t, "0C9"),
+        rec("supp_soft", 2048, "3S10M", "GGGTAAAAAAAAA", "0C9"),
+    ];
+    let all: Vec<&str> = dropped.iter().chain(&kept).map(String::as_str).collect();
+    let input = sam(&dir, "probes.sam", &all);
+    let names = |args: &[&str]| -> Vec<String> {
+        let o = run(&[&["score", "--quiet"][..], args, &[s(&input)]].concat());
+        assert!(o.status.success(), "{}", stderr(&o));
+        String::from_utf8(o.stdout)
+            .unwrap()
+            .lines()
+            .skip(1)
+            .map(|l| l.split('\t').next().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(names(&["--pmdtools-compat"]), ["plain", "supp_soft"]);
+    let j = damage_json(&input, &["--pmdtools-compat"]);
+    assert_eq!(j["reads"]["skipped"]["unsupported_cigar"], 8);
+    assert_eq!(j["reads"]["scored"], 2);
+    let j = damage_json(&input, &["--pmdtools-compat", "--no-clips"]);
+    assert_eq!(j["reads"]["skipped"]["clips"], 9);
+    assert_eq!(j["reads"]["skipped"]["unsupported_cigar"], 0);
+    // Default mode scores every mapped one (the flag-4 read is skipped as unmapped).
+    assert_eq!(names(&[]).len(), 9);
+    let j = damage_json(&input, &[]);
+    assert_eq!(j["reads"]["skipped"]["unsupported_cigar"], 0);
+    assert_eq!(j["reads"]["skipped"]["unmapped"], 1);
+}
