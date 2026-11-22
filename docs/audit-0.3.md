@@ -273,6 +273,12 @@ Generated reads, built from random reference windows with random damage, mismatc
 - **Property 4** (`-r` against MD; default, compat and ss): one test.
 - **Property 8** is covered elsewhere, not by proptest: it needs Python, which the test suite does not depend on. It is covered by `model_parity` (precomputed oracle terms) and by the PMDtools comparisons.
 - **Results:** 24 cases per property passed on WSL with the B2 fix: about 300,000 reads for properties 1 and 5, and about 60,000 for the others. CI runs 12 cases per property.
+- **10,000 small cases per property (2026-11-22, for the done-when condition in section 1).** `PROP_MAX_N=50` caps each case at 50 reads.
+  - The three property tests ran 10,000 cases each on WSL, from `main` at `3fc5362` (0.3.1 plus B8), as a release build.
+  - They ran in five chunks of 2,000 cases with `PROPTEST_RNG_SEED` 101 to 105, so each chunk can be rerun. Command: `PROP_MAX_N=50 PROPTEST_CASES=2000 PROPTEST_RNG_SEED=101 cargo test --release --test properties`.
+  - All passed, taking about 2 minutes per chunk.
+  - With at most 50 reads, a case fits in one batch, so properties 1 and 5 across several batches rest on the 24 large cases above.
+  - Property 8 is not a proptest property (see above).
 - **Findings:**
   - property 4 found B2;
   - the first failure of property 1 was a test bug: the recorded command line contains `-@ N`, so outputs are now compared without it.

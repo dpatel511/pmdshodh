@@ -4,7 +4,8 @@
 //! reference.
 //!
 //! Each case runs the binary several times, so the number of cases is small (PROPTEST_CASES
-//! overrides it). The reads per property add up to well over 10,000.
+//! overrides it). The reads per property add up to well over 10,000. PROP_MAX_N caps the reads
+//! per case, for runs of many small cases (docs/audit-0.3.md §5.1).
 
 use std::fmt::Write as _;
 use std::fs;
@@ -243,6 +244,14 @@ fn scores(out: &[u8]) -> Vec<(String, f64, u64)> {
         .collect()
 }
 
+/// The exclusive upper bound of reads per case: `default`, or PROP_MAX_N + 1 if that is smaller.
+fn reads_below(default: usize) -> usize {
+    std::env::var("PROP_MAX_N")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .map_or(default, |m| (m + 1).clamp(2, default))
+}
+
 fn config() -> ProptestConfig {
     ProptestConfig {
         cases: std::env::var("PROPTEST_CASES")
@@ -259,7 +268,7 @@ proptest! {
     /// Properties 1 and 5: `score`, `filter` and `damage` give byte-identical output at -@ 1, 2
     /// and 8, and the same records in SAM or BAM give the same scores and summary.
     #[test]
-    fn output_does_not_depend_on_threads_or_input_format(seed in any::<u64>(), n in 1usize..25_000) {
+    fn output_does_not_depend_on_threads_or_input_format(seed in any::<u64>(), n in 1usize..reads_below(25_000)) {
         let input = generate(seed, n, "threads");
         let sam = s(&input.sam);
         for cmd in [
@@ -288,7 +297,7 @@ proptest! {
     #[test]
     fn filter_keeps_by_score_in_order_and_counts_add_up(
         seed in any::<u64>(),
-        n in 1usize..5_000,
+        n in 1usize..reads_below(5_000),
         t in -5.0f64..10.0,
         width in 0.5f64..10.0,
     ) {
@@ -348,7 +357,7 @@ proptest! {
     /// Property 4: scores from the reference (-r) equal scores from correct MD tags, in default
     /// and compat mode, ds and ss.
     #[test]
-    fn reference_scores_equal_md_scores(seed in any::<u64>(), n in 1usize..5_000) {
+    fn reference_scores_equal_md_scores(seed in any::<u64>(), n in 1usize..reads_below(5_000)) {
         let input = generate(seed, n, "reference");
         let (sam, fasta) = (s(&input.sam), s(&input.fasta));
         for mode in [&[][..], &["--pmdtools-compat"][..], &["--library", "ss"][..]] {
