@@ -186,9 +186,9 @@ impl<'a> Fields<'a> {
 pub fn parse(file: &str, json: &Value) -> Result<Sample, String> {
     let f = Fields { file, root: json };
     let version = f.u64("format_version")?;
-    if !(1..=3).contains(&version) {
+    if !(1..=4).contains(&version) {
         return Err(format!(
-            "{file}: format_version {version} is not supported (this pmdshodh reads versions 1 to 3)"
+            "{file}: format_version {version} is not supported (this pmdshodh reads versions 1 to 4)"
         ));
     }
     if f.str("tool.name")? != "pmdshodh" {
@@ -1498,10 +1498,10 @@ mod tests {
     #[test]
     fn bad_summaries_name_the_file_and_field() {
         let mut j = summary("ds", 3);
-        j["format_version"] = json!(4);
+        j["format_version"] = json!(5);
         let e = parse("f.json", &j).unwrap_err();
         assert!(
-            e.contains("f.json") && e.contains("format_version") && e.contains('4'),
+            e.contains("f.json") && e.contains("format_version") && e.contains('5'),
             "{e}"
         );
         let mut j = summary("ds", 3);

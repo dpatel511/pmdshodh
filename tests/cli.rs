@@ -367,7 +367,7 @@ fn damage_table_matches_pmdtools_deamination() {
 #[test]
 fn summary_json_counts_and_versions() {
     let j = damage_json(&[]);
-    assert_eq!(j["format_version"], 3);
+    assert_eq!(j["format_version"], 4);
     assert_eq!(j["reference"]["bases_from"], "md");
     assert!(j["reference"]["md_tags"].is_null());
     assert_eq!(j["reads"]["input"], 1500);

@@ -122,7 +122,7 @@ Default = PMDtools behaviour, except where marked. Every departure gets a regres
 | Empty MD tag (`MD:Z:`) on a mapped read | dropped silently | error, exit 2, also with `--pmdtools-compat` (audit §4.5) | **yes** |
 | Mapped read with CIGAR `*` and an MD tag (aligners do not write these) | scored from its MD | error, exit 2, also with `--pmdtools-compat` (agreed 2026-11-22, audit §4.5) | **yes** |
 | Hard-clipped read (`H`) | dropped, stderr message, whatever its flags | scored (hard clips are not in SEQ, so z is unaffected); `--pmdtools-compat` drops it, counted as `unsupported_cigar` (audit finding B6, blackbox.md 1.6f) | **yes** (D3) |
-| 1-bp read | dropped silently | scored | **yes** (trivial) |
+| Read whose SEQ is 1 base | dropped silently, whatever its CIGAR or flags (a 2-base SEQ with one aligned base is scored) | scored; `--pmdtools-compat` drops it, counted as `too_short` (audit finding B8, blackbox.md 1.6g) | **yes** (trivial) |
 | Read with no informative sites | PMDS 0, kept at threshold ≤ 0 and by `--upperthreshold` | PMDS 0, counted as `no_informative_sites`; kept at `--threshold` ≤ 0, but **not kept by `--upper-threshold`** (no evidence of being undamaged); `--pmdtools-compat` keeps it (agreed 2026-11-13) | **yes** (`--upper-threshold` only) |
 | `--threshold` ≤ −10000 with no `--upperthreshold` below 1,000,000 (or `--upperthreshold` ≥ 1,000,000 alone) | counted as not given: no reads written, no message (blackbox.md 1.7b) | the bounds are applied as given, so `-t -1e6` keeps every scored read; `filter --pmdtools-compat` keeps none and prints a note (audit finding B7, 2026-11-22) | **yes** |
 | Secondary, supplementary, duplicate, QC-fail, paired mates | all scored | all scored by default, counted in summary; `--skip-flags` to drop | no (D2) |
@@ -146,7 +146,7 @@ Default = PMDtools behaviour, except where marked. Every departure gets a regres
 
 ## 6. Summary JSON (`format_version: 1`)
 
-This section shows version 1. Version 2 adds `input_format` and a `reference` section (§11, item 9). Version 3 adds the skip reason `no_reference_bases` (`--pmdtools-compat` only; blackbox.md 1.6e).
+This section shows version 1. Version 2 adds `input_format` and a `reference` section (§11, item 9). Version 3 adds the skip reason `no_reference_bases` (`--pmdtools-compat` only; blackbox.md 1.6e). Version 4 adds the skip reason `too_short` (`--pmdtools-compat` only; blackbox.md 1.6g).
 
 One file per run. No timestamps, so it is identical for identical inputs and options, whatever the thread count.
 

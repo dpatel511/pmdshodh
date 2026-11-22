@@ -547,7 +547,7 @@ fn compat_drops_reads_without_reference_bases_like_pmdtools() {
     let j = damage_json(&input, &["--pmdtools-compat"]);
     assert_eq!(j["reads"]["skipped"]["no_reference_bases"], 6);
     assert_eq!(j["reads"]["scored"], 1);
-    assert_eq!(j["format_version"], 3);
+    assert_eq!(j["format_version"], 4);
     // Default mode scores all seven (`=` bases need -r there, so that read is left out).
     let default_input = sam(
         &dir,
@@ -1115,4 +1115,62 @@ fn output_to_dev_stdout() {
     let via_dev = sam_without_pg("/dev/stdout");
     assert!(via_dev.lines().any(|l| !l.starts_with('@')), "has records");
     assert_eq!(via_dev, sam_without_pg("-"));
+}
+
+/// Audit finding B8: PMDtools 0.60 drops every read whose SEQ is 1 base, silently, whatever its
+/// CIGAR op, strand or flags; a 2-base SEQ with one aligned base is scored (docs/blackbox.md
+/// 1.6g; probes 2026-11-22). `--pmdtools-compat` scored them. It now drops them, counted as
+/// `too_short`; default mode still scores them (docs/design.md §5).
+#[test]
+fn compat_drops_one_base_reads_like_pmdtools() {
+    let dir = tmp_dir("one_base");
+    let rec = |name: &str, flag: u16, cigar: &str, seq: &str, md: &str| {
+        let q = "I".repeat(seq.len());
+        format!("{name}\t{flag}\tc\t11\t37\t{cigar}\t*\t0\t0\t{seq}\t{q}\tMD:Z:{md}")
+    };
+    let dropped = [
+        rec("damaged", 0, "1M", "T", "0C0"),
+        rec("reverse", 16, "1M", "T", "0C0"),
+        rec("match", 0, "1M", "A", "1"),
+        rec("x_op", 0, "1X", "T", "0C0"),
+        // Flagged unmapped but placed: compat scores these from MD (B4), but not at 1 base.
+        rec("placed", 4, "1M", "T", "0C0"),
+    ];
+    // PMDtools 0.60 --printDS: 4.6881, 5.0297 and 5.0297.
+    let kept = [
+        rec("clip", 0, "1S1M", "GT", "0C0"),
+        rec("insertion", 0, "1M1I", "TG", "0C0"),
+        rec("two", 0, "2M", "TA", "0C1"),
+    ];
+    let all: Vec<&str> = dropped.iter().chain(&kept).map(String::as_str).collect();
+    let input = sam(&dir, "one_base.sam", &all);
+    let compat = scores(&["--pmdtools-compat", s(&input)]);
+    let names: Vec<&str> = compat.iter().map(|(n, _, _)| n.as_str()).collect();
+    assert_eq!(names, ["clip", "insertion", "two"]);
+    let values: Vec<f64> = compat.iter().map(|(_, p, _)| *p).collect();
+    assert!((values[0] - 4.688132074164015).abs() < 1e-12, "{values:?}");
+    assert_eq!(values[1..], [5.029717285061267, 5.029717285061267]);
+    let j = damage_json(&input, &["--pmdtools-compat"]);
+    assert_eq!(j["reads"]["skipped"]["too_short"], 5);
+    assert_eq!(j["reads"]["scored"], 3);
+    assert_eq!(j["format_version"], 4);
+    // They are not written by filter either, at any threshold.
+    let out = dir.join("kept.sam");
+    let o = run(&[
+        "filter",
+        "--quiet",
+        "--pmdtools-compat",
+        "-t",
+        "-5",
+        s(&input),
+        "-o",
+        s(&out),
+    ]);
+    assert!(o.status.success(), "{}", stderr(&o));
+    assert_eq!(records_of(&out).len(), 3);
+    // Default mode scores the seven mapped reads; the flag-4 one is skipped as unmapped.
+    assert_eq!(scores(&[s(&input)]).len(), 7);
+    let j = damage_json(&input, &[]);
+    assert_eq!(j["reads"]["skipped"]["too_short"], 0);
+    assert_eq!(j["reads"]["skipped"]["unmapped"], 1);
 }
