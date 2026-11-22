@@ -504,3 +504,61 @@ fn compat_scores_placed_unmapped_reads_like_pmdtools() {
     );
     assert_eq!(damage_json(&input, &[])["reads"]["skipped"]["unmapped"], 3);
 }
+
+/// Audit finding B5: PMDtools drops a read whose rebuilt reference has no uppercase A, C, G or T
+/// ("bad reference sequence reconstruction"): all N, all `=` read bases, lowercase MD letters. The
+/// probes and outcomes below are PMDtools 0.60's (2026-11-22). `--pmdtools-compat` now drops them
+/// too, counted as `no_reference_bases`; default mode scores them (0 sites, score 0).
+#[test]
+fn compat_drops_reads_without_reference_bases_like_pmdtools() {
+    let dir = tmp_dir("no_reference_bases");
+    let q = "IIIIIIIIII";
+    let rec = |name: &str, cigar: &str, seq: &str, md: &str| {
+        format!("{name}\t0\tc\t11\t37\t{cigar}\t*\t0\t0\t{seq}\t{q}\tMD:Z:{md}")
+    };
+    let dropped = [
+        rec("all_n", "10M", "ACGTACGTAC", "0N0N0N0N0N0N0N0N0N0N0"),
+        rec("n_reads", "10M", "NNNNNNNNNN", "10"),
+        rec(
+            "n_with_d",
+            "5M1D5M",
+            "ACGTACGTAC",
+            "0N0N0N0N0N^N0N0N0N0N0N0",
+        ),
+        rec("n_clip", "2S8M", "ACGTACGTAC", "0N0N0N0N0N0N0N0N0"),
+        rec("all_eq", "10M", "==========", "10"),
+        rec("lower", "10M", "ACGTACGTAC", "0n0n0n0n0n0n0n0n0n0a0"),
+    ];
+    let kept = [rec("one_a", "10M", "ACGTACGTAC", "0N0N0N0N0N0N0N0N0N1")];
+    let all: Vec<&str> = dropped.iter().chain(&kept).map(String::as_str).collect();
+    let input = sam(&dir, "probes.sam", &all);
+    let names = |args: &[&str]| -> Vec<String> {
+        let o = run(&[&["score", "--quiet"][..], args, &[s(&input)]].concat());
+        assert!(o.status.success(), "{}", stderr(&o));
+        String::from_utf8(o.stdout)
+            .unwrap()
+            .lines()
+            .skip(1)
+            .map(|l| l.split('\t').next().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(names(&["--pmdtools-compat"]), ["one_a"]);
+    let j = damage_json(&input, &["--pmdtools-compat"]);
+    assert_eq!(j["reads"]["skipped"]["no_reference_bases"], 6);
+    assert_eq!(j["reads"]["scored"], 1);
+    assert_eq!(j["format_version"], 3);
+    // Default mode scores all seven (`=` bases need -r there, so that read is left out).
+    let default_input = sam(
+        &dir,
+        "default.sam",
+        &all.iter()
+            .copied()
+            .filter(|r| !r.starts_with("all_eq"))
+            .collect::<Vec<_>>(),
+    );
+    let o = run(&["score", "--quiet", s(&default_input)]);
+    assert!(o.status.success(), "{}", stderr(&o));
+    assert_eq!(String::from_utf8(o.stdout).unwrap().lines().count(), 7);
+    let j = damage_json(&default_input, &[]);
+    assert_eq!(j["reads"]["skipped"]["no_reference_bases"], 0);
+}

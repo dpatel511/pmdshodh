@@ -135,6 +135,23 @@ The rule reproduces **all 1,500** reads' PMDtools scores to ≤ 2.3e-14 (ds mode
 - `--ss` scores only C sites and is unaffected.
 - With this rule and 1.6c, **all 8 modes** of the fixture (ds, ss, ×none/half/full, `-q 20`, changed parameters) match PMDtools for all 1,500 reads (≤ 8.3e-14).
 
+### 1.6e Reads dropped as "bad reference sequence reconstruction" (audit finding B5, 2026-11-22)
+PMDtools drops a read, printing `bad reference sequence reconstruction: <rebuilt reference>` to stderr, when the reference rebuilt along the read (1.6c) has **no uppercase A, C, G or T**. Probes run one read each through `--printDS`; the reconstruction shown is PMDtools' own message:
+
+| Probe | Rebuilt reference | Outcome |
+|---|---|---|
+| MD `0N0N…0N0` (all N), forward or reverse | `NNNNNNNNNN` | dropped |
+| N read bases, MD `10` | `NNNNNNNNNN` | dropped |
+| all N, with a deletion (`5M1D5M`) | `NNNNNNNNN` | dropped |
+| all N, with a soft clip (`2S8M`) | `--NNNNNNNN` | dropped |
+| `=` read bases only, MD `10` | `==========` | dropped |
+| `=` and N read bases | `=====NNNNN` | dropped |
+| lowercase MD letters only (`0n…0a0`) | `nnnnnnnnna` | dropped |
+| nine N and one A in MD | — | scored (−0.021) |
+| a single N (first, middle or last) | — | scored |
+
+Such reads have no C or G site in any mode, so pmdshodh's default mode scores them 0 from 0 sites. `--pmdtools-compat` drops them, counted as `skipped.no_reference_bases`. This also reproduces PMDtools dropping reads made only of `=` bases.
+
 ### 1.6d Damage table (`--deamination`), found in build step 5
 - Rows are z = 0…range−1 from the terminal base. Columns:
   - CT CA CG CC: the fraction of read bases A/C/G/T at reference C, from the **5′ end**;

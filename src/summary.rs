@@ -11,7 +11,7 @@ use crate::model::NULL_BACKGROUND;
 use crate::reads::{MdCheck, ReadFilters, SkipReason};
 use crate::sites::{Library, ReadScore, Settings, Treatment};
 
-pub const FORMAT_VERSION: u32 = 2;
+pub const FORMAT_VERSION: u32 = 3;
 const HIST_MIN: f64 = -20.0;
 const HIST_MAX: f64 = 40.0;
 const HIST_BIN: f64 = 0.5;
