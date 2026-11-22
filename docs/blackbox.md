@@ -182,6 +182,21 @@ Default mode scores hard-clipped reads (departure D3, design.md §5). `--pmdtool
   - Before, the `--UDGhalf` table differed at positions 1–5 (up to 0.009; 57 of the 1,500 fixture reads), because compat used the `--CpG` rule.
   - With this rule, `damage --pmdtools-compat --treatment half` matches PMDtools on every fixture read, both read by read and as a whole table (30 positions, 5 decimals). It also matches on the first 200,054 reads of BER11_L_NOuser and 200,012 of Motala3.
 
+### 1.6g Reads with a 1-base SEQ are dropped (audit finding B8, 2026-11-22)
+PMDtools drops every read whose SEQ is 1 base, with no message, exit 0 (1.6). The rule is the SEQ length, not the aligned length. Probes ran one read each through `--printDS`; the scores are PMDtools':
+
+| Probe | Outcome |
+|---|---|
+| `1M` `T` over MD `0C0`, forward or reverse; `1M` `A` all match; `1M` `N` | dropped |
+| `1X` `T`; `1=` `C` | dropped |
+| `1M` `T` with flag 4 (placed unmapped, B4), or with `--ss` | dropped |
+| `1M` `T`, `--threshold -5` or `0` | not written |
+| `1M` `T`, `--deamination` | not counted (the z = 0 C→T fraction stays 0) |
+| `1S1M` `GT`; `1I1M` `GT` (one aligned base, SEQ of 2) | scored (4.6881) |
+| `1M1S` `TG`; `1M1I` `TG`; `1M1D1M` `TA`; `2M` `TA` | scored (5.0297) |
+
+Default mode scores 1-base reads (design.md §5). `--pmdtools-compat` drops them, counted as `skipped.too_short`.
+
 ### 1.7 Filtering output (`--threshold`)
 - **Keeps PMDS ≥ threshold** (a read exactly at the threshold passes). `--upperthreshold` keeps PMDS **<** its value.
 - Reads with no informative sites (PMDS 0) pass `--threshold 0`.

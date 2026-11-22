@@ -30,10 +30,12 @@ pub enum SkipReason {
     NoQualities,
     /// `--pmdtools-compat` only: the rebuilt reference has no A, C, G or T (audit finding B5).
     NoReferenceBases,
+    /// `--pmdtools-compat` only: SEQ is 1 base, which PMDtools drops (audit finding B8).
+    TooShort,
 }
 
 impl SkipReason {
-    pub const ALL: [SkipReason; 8] = [
+    pub const ALL: [SkipReason; 9] = [
         SkipReason::Unmapped,
         SkipReason::LowMapq,
         SkipReason::Clipped,
@@ -42,6 +44,7 @@ impl SkipReason {
         SkipReason::NoSequence,
         SkipReason::NoQualities,
         SkipReason::NoReferenceBases,
+        SkipReason::TooShort,
     ];
 
     pub fn name(self) -> &'static str {
@@ -54,6 +57,7 @@ impl SkipReason {
             SkipReason::NoSequence => "no_sequence",
             SkipReason::NoQualities => "no_qualities",
             SkipReason::NoReferenceBases => "no_reference_bases",
+            SkipReason::TooShort => "too_short",
         }
     }
 }
@@ -224,6 +228,11 @@ fn score_fields(
             qual.len(),
             seq.len()
         ));
+    }
+    // PMDtools drops a read whose SEQ is 1 base, silently, whatever its CIGAR or flags
+    // (docs/blackbox.md 1.6g, audit finding B8). Default mode scores it.
+    if settings.pmdtools_compat && seq.len() == 1 {
+        return Ok(Outcome::Skipped(SkipReason::TooShort));
     }
 
     let reverse = flags.is_reverse_complemented();

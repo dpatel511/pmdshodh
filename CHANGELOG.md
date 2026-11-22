@@ -6,6 +6,12 @@ Changes to the JSON run summary are listed with its `format_version`.
 
 ## [Unreleased]
 
+### Changed
+- JSON run summary `format_version` 4 (was 3): `reads.skipped` has a new reason, `too_short`, counted only with `--pmdtools-compat` (see Fixed, B8). Other fields are unchanged. `report` reads versions 1 to 4.
+
+### Fixed
+- `--pmdtools-compat` scored reads whose SEQ is 1 base, but PMDtools 0.60 drops them silently, whatever their CIGAR operation, strand or flags. A 2-base SEQ with a single aligned base (`1S1M`, `1M1I`) is still scored (rule found by black-box probes, docs/blackbox.md 1.6g). Compat now drops them, counted as `skipped.too_short`, and leaves them out of `filter` output and the damage table, as PMDtools does. Default mode still scores them. Found by the 0.3 audit's edge-case map (docs/audit-0.3.md, B8).
+
 ## [0.3.1] - 2026-11-22
 
 Fixes from the 0.3 audit (docs/audit-0.3.md, findings B1–B7). For valid input, default-mode scores and kept reads are unchanged. With `-r`, a FASTA whose index no longer matches it is now an input error instead of giving wrong reference bases (B1), and an absurd CIGAR is an input error at once (B3). `--pmdtools-compat` now matches PMDtools 0.60 in five more cases: `N` over `N` with `-r` (B2), placed unmapped reads (B4), reads without reference bases (B5), hard-clipped reads (B6) and out-of-range filter thresholds (B7). The JSON run summary is now `format_version` 3, with one new skip reason, counted only in compat mode.
