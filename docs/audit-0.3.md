@@ -285,6 +285,38 @@ The libraries in section 7 cover ds without UDG, likely-UDG ds, ss without UDG a
 
 Small files (under 100 MB) are preferred. A larger file is only taken if a small one does not exist, and only after you approve its size.
 
+### 8.1 Results (2026-11-21)
+
+**Sources:**
+- The AADR v66.p1 annotation table (`v66.p1_1240K.aadr.PUB.anno`, Harvard Dataverse doi:10.7910/DVN/FFIDCW, CC0, 13.4 MB, md5 checked) lists each sample's library type. It has no `ss.half` or `ss.plus`, but 2,149 `ss.USER` samples (single-stranded, USER-treated).
+- From it, three mitochondrial BAMs were taken from ENA (INSDC open data), downloaded 2026-11-21, with md5 checked against ENA:
+
+| Gap | ENA run | Sample (publication) | Size | Reads |
+|---|---|---|---|---|
+| ss, USER-treated (item 1) | ERR7195621 | I19359.MT (Patterson et al. 2021, PRJEB47891) | 8.1 MB | 273,326 |
+| ds, UDG-half (item 2) | ERR4589292 | I8525.MT (Narasimhan et al. 2019, PRJEB32466) | 40.4 MB | 755,825 |
+| ds, full UDG (item 2) | ERR1995180 | I0071.MT (Lazaridis et al. 2017, PRJEB20914) | 6.2 MB | 141,943 |
+
+- **Item 3, many references:** built locally. Motala3's 310,698 chr21 reads were re-aligned with `bwa aln` to chr21 cut into 3,511 contigs of 10 kb (contigs that are mostly N were dropped), giving a 25 MB BAM and a 9.5 MB CRAM.
+- **Item 4, mapDamage rescaling:** already covered. Every read sampled from BER11_L_NOuser (the first 200,000) carries mapDamage's `MR` tag. That file has been in every PMDtools comparison and in the real-data matrix. mapDamage2 2.2.3 refused to rescale it a second time for that reason. The quality changes themselves were not verified.
+
+**Checks.** `docs/benchmarks/audit_matrix.py`-style checks, with compat compared to PMDtools by read name, in the modes each library implies plus the untreated mode. **30 PASS, 0 FAIL** on the three ENA libraries:
+- **Compat scores** equal PMDtools' on every read PMDtools scores, in every mode tried: ss and ss with `--UDGhalf`; `--UDGhalf` and untreated; `--CpG` and untreated. Largest difference 4.4e-14.
+- **Kept reads** at t = 3 are identical: 18,347; 31,059 and 34,641; 214 and 1,379.
+- **Damage tables** match `--deamination` within its 5-decimal rounding.
+- **Counts**, `-@ 1` against `-@ 8`, and **report against JSON** all pass.
+- **`-r` against MD:** reads differ only where MD tags disagree with rCRS. I19359 and I0071 carry many stale MD tags (29,326 and 23,462 respectively).
+- **First-base C→T**, in the order of the table above: 23.35%, 8.83% and 0.79%, as their treatments predict.
+
+**Many-reference BAM and CRAM:**
+- `-@ 1` equals `-@ 8`, CRAM `-r` equals BAM MD scores (307,139 reads), and counts equal samtools'.
+- CRAM decoding against 3,511 references takes 1.1 s, with 432 MB peak memory.
+- This file found **B4**. After the fix, compat equals PMDtools on all 309,320 reads.
+
+**Findings:**
+- **B4** (fixed in #57).
+- **B5** (open): in I8525, 20 reads aligned only to `N` reference bases (MD `0N0N…`) are dropped by PMDtools with "bad reference sequence reconstruction", while compat scores them with 0 sites. The 18-read count difference on the sweep's `bwa_mem_pe.bam` (predating B4) may be the same; not yet checked.
+
 ## 9. Order
 
 1. Coverage map (section 3). It sets the test list.
@@ -302,6 +334,8 @@ Recorded as they are found:
 
 | # | Kind | What | Evidence (test, data, command) | Status |
 |---|---|---|---|---|
+| B5 | Bug (compat) | PMDtools drops reads whose rebuilt reference it calls a "bad reference sequence reconstruction"; seen on reads aligned only to `N` (MD `0N0N…`). `--pmdtools-compat` scores them, with 0 sites and a score of 0. Kept reads are unaffected. | I8525.MT (ERR4589292): 20 of 755,825 reads, in UDG-half and untreated mode (2026-11-21). | Open: PMDtools' exact rule is to be found by black-box probes before a fix. |
+| B4 | Bug (compat) | `--pmdtools-compat` skipped reads flagged unmapped that still have a CIGAR and MD, which PMDtools scores because it ignores flags. bwa writes these for reads overhanging a reference end. | Many-reference BAM: compat 307,139 reads vs PMDtools 309,320 (2026-11-21). | Fix in PR #57: compat scores them from MD; default skips them, documented in design.md §5. Compat then equals PMDtools on all 309,320. |
 | B3 | Bug | With `-r`, a CIGAR covering far more read bases than SEQ had its per-base vector built before the length check. Separately, CIGAR lengths were summed with a plain sum, which could wrap round to SEQ's length, and `fetch` could overflow at `start + len`. | Fuzz target `alignment`, then the release binary with `SEQ` = `AC`: `1M4000000000I` used 7.3 GB for 39 s before exit 2; `1M20000000000000000I` aborted with "memory allocation of 40000000000000002 bytes failed", exit 134 (2026-11-21). Without `-r`, both were exit 2 at once. | Fix in PR #55: the length is checked first with a saturating sum, `reference_span` saturates, and `fetch` uses `checked_add`. Three regression tests. Valid reads give identical output (ber2m, Motala3; default and compat). |
 | B2 | Bug | `--pmdtools-compat -r` counted an `N` read base over an `N` reference base as a match when it built MD from the reference. calmd counts it as a mismatch (`5N2` for `ACGTANGT` over `ACGTANGT`). Reads that also hit the 1.6c reconstruction then scored differently from `calmd \| pmdtools`. | Property 4 on seed 48490, 592 reads with calmd-identical MD: compat from MD matched PMDtools 0.60 on all 583 scored reads (≤ 2e-14); compat `-r` differed on 15 reads, by up to 0.085. All 15 had N over N together with the 1.6c trigger (2026-11-21). Real libraries are not affected (byte-identical before and after). | Fix in PR #52: N never matches, as in calmd. Afterwards, 0 of 583 reads differ from PMDtools. |
 | B1 | Bug | With `-r` and SAM/BAM input, a FASTA whose `.fai` no longer matches its line lengths (rewrapped after indexing) is read silently, giving wrong reference bases from the second 1 MiB block on. The CRAM path checks line lengths and stops with an error; the SAM/BAM path does not. `samtools faidx` also returns wrong bases here, and `samtools calmd` fails reading the whole sequence. | A synthetic 2.5 Mb reference, indexed at 60 columns and rewrapped to 70, with one read at 2,000,001: `score -r` gave 6.55 from 8 sites instead of −1.17 from 22, with exit 0 (2026-11-21). | Fix in PR #51: every line break is checked against the index, for the `-r` blocks and for CRAM from plain and bgzip FASTA. Regression test `reference::tests::fasta_that_does_not_match_its_index_is_an_error`. Outputs for correctly indexed FASTAs were unchanged on 4 real inputs, and speed was unchanged. |
