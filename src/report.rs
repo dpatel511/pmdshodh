@@ -1590,6 +1590,22 @@ mod tests {
         assert!(html.contains("n/a"));
     }
 
+    /// Audit §4.3: every scored read below or above the plotted score range. The histogram has
+    /// no bars; the page states the counts outside the range and has no NaN.
+    #[test]
+    fn scores_all_outside_the_histogram_range_render() {
+        for (under, over) in [(10, 0), (0, 10), (4, 6)] {
+            let mut j = summary("ds", 3);
+            j["score_histogram"]["counts"] = json!(vec![0; 120]);
+            j["score_histogram"]["underflow"] = json!(under);
+            j["score_histogram"]["overflow"] = json!(over);
+            let html = render(&[parse("o.json", &j).unwrap()]);
+            assert!(all_finite(&html), "{under} {over}");
+            let note = format!("Below -20: {under} reads; at or above 40: {over} reads.");
+            assert!(html.contains(&note), "{under} {over}");
+        }
+    }
+
     /// B1 (docs/report-proposal.md §9): a legend wider than its chart widened the figure, so the
     /// overlay charts stacked in one column. Figures are capped at the chart's width.
     #[test]
