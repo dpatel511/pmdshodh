@@ -37,6 +37,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "cram"
+path = "fuzz_targets/cram.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "summary"
 path = "fuzz_targets/summary.rs"
 test = false
