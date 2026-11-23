@@ -16,8 +16,7 @@ use rayon::prelude::*;
 
 pub struct Reader {
     inner: cram::io::Reader<Box<dyn Read + Send>>,
-    /// The end-of-file container was read. noodles leaves its body unread, so the input must not
-    /// be read again.
+    /// The end-of-file container was read; nothing after it is.
     eof: bool,
 }
 
@@ -37,8 +36,9 @@ impl Reader {
     pub fn read_containers(&mut self, n: usize) -> io::Result<Vec<cram::io::reader::Container>> {
         let mut containers = Vec::with_capacity(n);
         while !self.eof && containers.len() < n {
+            let bytes = read_container_bytes(self.inner.get_mut())?;
             let mut container = cram::io::reader::Container::default();
-            if self.inner.read_container(&mut container)? == 0 {
+            if cram::io::Reader::new(&bytes[..]).read_container(&mut container)? == 0 {
                 self.eof = true;
             } else {
                 containers.push(container);
@@ -46,6 +46,92 @@ impl Reader {
         }
         Ok(containers)
     }
+}
+
+/// One container's bytes, header and body, for noodles to parse. noodles' `read_container`
+/// allocates the body length the header claims before reading it, so a corrupt header could cost
+/// up to 2 GB (audit finding B10); here the body is read as it arrives, and a container longer than
+/// the input is an error that costs only the bytes the input has.
+fn read_container_bytes(input: &mut impl Read) -> io::Result<Vec<u8>> {
+    // CRAM 3 §7.3: length, reference sequence ID, alignment start, span, records (ITF8), record
+    // counter, bases (LTF8), blocks, landmarks (ITF8 array), CRC-32.
+    let mut head = Recorded {
+        inner: &mut *input,
+        bytes: Vec::new(),
+    };
+    let mut len = [0; 4];
+    head.read_exact(&mut len)?;
+    for _ in 0..4 {
+        read_itf8(&mut head)?;
+    }
+    for _ in 0..2 {
+        read_ltf8(&mut head)?;
+    }
+    read_itf8(&mut head)?;
+    for _ in 0..read_itf8(&mut head)?.max(0) {
+        read_itf8(&mut head)?;
+    }
+    head.read_exact(&mut [0; 4])?;
+    let mut bytes = head.bytes;
+    // A negative length is left for noodles to reject.
+    let len = u64::try_from(i32::from_le_bytes(len)).unwrap_or(0);
+    let read = input.take(len).read_to_end(&mut bytes)?;
+    if (read as u64) < len {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            format!("container of {len} bytes is cut short: the input ends after {read}"),
+        ));
+    }
+    Ok(bytes)
+}
+
+/// A reader that keeps a copy of the bytes read through it.
+struct Recorded<'a, R> {
+    inner: &'a mut R,
+    bytes: Vec<u8>,
+}
+
+impl<R: Read> Read for Recorded<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.bytes.extend_from_slice(&buf[..n]);
+        Ok(n)
+    }
+}
+
+fn read_u8(reader: &mut impl Read) -> io::Result<u8> {
+    let mut b = [0];
+    reader.read_exact(&mut b)?;
+    Ok(b[0])
+}
+
+/// An ITF8 integer (CRAM 3 §2.3): the leading 1 bits of the first byte count the bytes after it,
+/// at most 4; the fifth byte gives only its low 4 bits.
+fn read_itf8(reader: &mut impl Read) -> io::Result<i32> {
+    let b0 = read_u8(reader)?;
+    let extra = b0.leading_ones().min(4);
+    let mut n = if extra == 4 {
+        u32::from(b0 & 0x0f)
+    } else {
+        u32::from(b0 & (0x7f >> extra))
+    };
+    for i in 0..extra {
+        let b = u32::from(read_u8(reader)?);
+        n = if i == 3 {
+            n << 4 | b & 0x0f
+        } else {
+            n << 8 | b
+        };
+    }
+    Ok(n as i32)
+}
+
+/// An LTF8 integer (CRAM 3 §2.3): as ITF8, up to 8 bytes after the first. Only its length matters.
+fn read_ltf8(reader: &mut impl Read) -> io::Result<()> {
+    for _ in 0..read_u8(reader)?.leading_ones() {
+        read_u8(reader)?;
+    }
+    Ok(())
 }
 
 /// The reference sequence a container's records are all aligned to, if it has exactly one.
@@ -234,5 +320,50 @@ mod tests {
         // After the end-of-file container, nothing more is read (a second read would fail).
         assert!(reader.read_containers(4).unwrap().is_empty());
         assert!(reader.read_containers(4).unwrap().is_empty());
+    }
+
+    /// CRC-32 (IEEE), as CRAM 3 container headers carry.
+    fn crc32(bytes: &[u8]) -> u32 {
+        let mut crc = !0u32;
+        for &b in bytes {
+            crc ^= u32::from(b);
+            for _ in 0..8 {
+                crc = if crc & 1 == 1 {
+                    (crc >> 1) ^ 0xedb8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        !crc
+    }
+
+    /// A container header with a correct checksum claims 2 GB, and 100 bytes follow it: an error,
+    /// read as the bytes arrive. noodles allocates the claimed length before reading it, so a
+    /// corrupt input of a few kilobytes cost 1.6 GB (audit finding B10).
+    #[test]
+    fn container_longer_than_the_input_is_cut_short() {
+        let (_, header, _, repository) = cram();
+        let mut w = cram::io::writer::Builder::default()
+            .set_reference_sequence_repository(repository)
+            .build_from_writer(Vec::new());
+        w.write_header(&header).unwrap();
+        let mut bytes = w.into_inner();
+        // Length, then reference sequence 0, start 1, span 10, 1 record, record counter 0,
+        // 10 bases, 1 block, no landmarks (ITF8 and LTF8 values below 128 are one byte).
+        let mut container = i32::MAX.to_le_bytes().to_vec();
+        container.extend([0, 1, 10, 1, 0, 10, 1, 0]);
+        let crc = crc32(&container);
+        container.extend(crc.to_le_bytes());
+        bytes.extend(container);
+        bytes.extend([0; 100]);
+        let mut reader = Reader::new(Box::new(io::Cursor::new(bytes)));
+        reader.read_header().unwrap();
+        let err = reader.read_containers(4).err().unwrap();
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+        assert_eq!(
+            err.to_string(),
+            "container of 2147483647 bytes is cut short: the input ends after 100"
+        );
     }
 }
