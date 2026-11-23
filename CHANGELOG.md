@@ -6,6 +6,9 @@ Changes to the JSON run summary are listed with its `format_version`.
 
 ## [Unreleased]
 
+### Fixed
+- A CRAM container claiming a body longer than the input made pmdshodh allocate the claimed length, up to 2 GB, before stopping with an input error. A corrupt 7.7 KB CRAM used 1.6 GB with `-@ 2`. The body is now read only as far as the input goes, so such a file is an input error (exit 2) at once, "container of N bytes is cut short", using memory only for the bytes it has. Output for valid CRAMs is unchanged. Found by fuzzing CRAM input in the 0.3 audit (docs/audit-0.3.md, B10).
+
 ## [0.3.2] - 2026-11-23
 
 Two more fixes from the 0.3 audit (docs/audit-0.3.md, B8 and B9), which is now complete. For valid input, default-mode scores and kept reads are unchanged from 0.3.1. `--pmdtools-compat` now drops reads with a 1-base SEQ, as PMDtools 0.60 does (B8), so the JSON run summary is now `format_version` 4, with one new compat-only skip reason. A CRAM with a mapped read past the end of its reference sequence is now an input error instead of a crash (B9).
