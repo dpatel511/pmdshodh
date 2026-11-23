@@ -1,6 +1,6 @@
 # Audit plan: 0.3.0, before milestone 6
 
-Status: **run 2026-11-20 to 2026-11-22.** The decisions in section 2 were agreed on 2026-11-20. Findings B1–B7 (section 10) are fixed in 0.3.1. The section 4 map (4.5) found B8 and O1–O3.
+Status: **run 2026-11-20 to 2026-11-22.** The decisions in section 2 were agreed on 2026-11-20. Findings B1–B7 (section 10) are fixed in 0.3.1, and B8 and B9 in 0.3.2. The section 4 map (4.5) found B8 and O1–O3. **Done 2026-11-23:** every done-when condition in section 1 holds (§3.1, §4.5, §5.1, §6.1, §7.1). Observations O1 and O4 wait for your decision.
 
 ## 1. Goal, scope and when it is done
 
