@@ -6,6 +6,10 @@ Changes to the JSON run summary are listed with its `format_version`.
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-11-23
+
+Two more fixes from the 0.3 audit (docs/audit-0.3.md, B8 and B9), which is now complete. For valid input, default-mode scores and kept reads are unchanged from 0.3.1. `--pmdtools-compat` now drops reads with a 1-base SEQ, as PMDtools 0.60 does (B8), so the JSON run summary is now `format_version` 4, with one new compat-only skip reason. A CRAM with a mapped read past the end of its reference sequence is now an input error instead of a crash (B9).
+
 ### Changed
 - JSON run summary `format_version` 4 (was 3): `reads.skipped` has a new reason, `too_short`, counted only with `--pmdtools-compat` (see Fixed, B8). Other fields are unchanged. `report` reads versions 1 to 4.
 
@@ -180,7 +184,8 @@ First release.
 - `score -o -` writes to stdout; it used to create a file named `-`.
 - `--pmdtools-compat` now also reproduces PMDtools 0.60 for lowercase reference bases in MD (never counted as C or G) and for reverse-strand reads whose MD contains characters PMDtools drops when reverse-complementing (e.g. lowercase `n`). Default scoring is unchanged; both are listed as departures in docs/design.md.
 
-[Unreleased]: https://github.com/dpatel511/pmdshodh/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/dpatel511/pmdshodh/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/dpatel511/pmdshodh/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/dpatel511/pmdshodh/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/dpatel511/pmdshodh/compare/v0.2.4...v0.3.0
 [0.2.4]: https://github.com/dpatel511/pmdshodh/compare/v0.2.3...v0.2.4

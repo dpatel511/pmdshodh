@@ -35,7 +35,7 @@ Each milestone ends with passing tests and, where a claim is made, measured evid
 | later | **Per-reference summaries** | Damage and score summaries per reference sequence for metagenomic BAMs | Agreed again before starting |
 
 ## Open items carried forward
-- Real single-stranded library for parity testing: done for a library without UDG treatment (2026-11-17, CHANGELOG.md); a UDG-treated single-stranded library is still untested.
+- Real single-stranded library for parity testing: done without UDG treatment (2026-11-17, CHANGELOG.md) and USER-treated (I19359, ENA ERR7195621; compat equals PMDtools in ss and ss `--UDGhalf`, docs/audit-0.3.md §8.1, 2026-11-21).
 - PMDtools UDG-half damage *table* rule: found 2026-11-20 (docs/blackbox.md 1.6d); `--pmdtools-compat` now matches it.
 - eager 2.5.3 `--CpG` for non-UDG libraries: confirm by a run before reporting (your decision).
 - Contact with metaDMG developers (your decision).
