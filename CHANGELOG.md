@@ -6,6 +6,10 @@ Changes to the JSON run summary are listed with its `format_version`.
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-11-23
+
+One fix, found by fuzzing CRAM input after the 0.3 audit (docs/audit-0.3.md, B10). A corrupt or truncated CRAM is now an input error at once, instead of first allocating up to 2 GB. Scores, kept reads and the JSON run summary (`format_version` 4) are unchanged from 0.3.2.
+
 ### Fixed
 - A CRAM container claiming a body longer than the input made pmdshodh allocate the claimed length, up to 2 GB, before stopping with an input error. A corrupt 7.7 KB CRAM used 1.6 GB with `-@ 2`. The body is now read only as far as the input goes, so such a file is an input error (exit 2) at once, "container of N bytes is cut short", using memory only for the bytes it has. Output for valid CRAMs is unchanged. Found by fuzzing CRAM input in the 0.3 audit (docs/audit-0.3.md, B10).
 
@@ -187,7 +191,8 @@ First release.
 - `score -o -` writes to stdout; it used to create a file named `-`.
 - `--pmdtools-compat` now also reproduces PMDtools 0.60 for lowercase reference bases in MD (never counted as C or G) and for reverse-strand reads whose MD contains characters PMDtools drops when reverse-complementing (e.g. lowercase `n`). Default scoring is unchanged; both are listed as departures in docs/design.md.
 
-[Unreleased]: https://github.com/dpatel511/pmdshodh/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/dpatel511/pmdshodh/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/dpatel511/pmdshodh/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/dpatel511/pmdshodh/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/dpatel511/pmdshodh/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/dpatel511/pmdshodh/compare/v0.2.4...v0.3.0
