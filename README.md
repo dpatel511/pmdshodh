@@ -1,15 +1,21 @@
 # pmdshodh
 
-**Fast, maintained post-mortem damage (PMD) scoring and filtering for ancient DNA alignments.**
+[![CI](https://github.com/dpatel511/pmdshodh/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/dpatel511/pmdshodh/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/pmdshodh?label=pypi)](https://pypi.org/project/pmdshodh/)
+[![Bioconda](https://img.shields.io/conda/vn/bioconda/pmdshodh?label=bioconda)](https://anaconda.org/bioconda/pmdshodh)
+[![GitHub release](https://img.shields.io/github/v/release/dpatel511/pmdshodh)](https://github.com/dpatel511/pmdshodh/releases/latest)
+[![Rust 1.91+](https://img.shields.io/badge/rust-1.91%2B-orange)](https://github.com/dpatel511/pmdshodh/blob/main/Cargo.toml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](https://github.com/dpatel511/pmdshodh/blob/main/LICENSE)
 
-pmdshodh scores every read in a SAM, BAM or CRAM file for ancient DNA damage, keeps or removes reads by score, and summarises damage patterns. It uses the scoring model of [PMDtools](https://github.com/pontussk/PMDtools) 0.60, fixes PMDtools' known errors by default (`--pmdtools-compat` reproduces PMDtools exactly), reads and writes alignments directly, and runs on multiple threads.
+**Fast post-mortem damage (PMD) scoring and filtering for ancient DNA alignments.**
 
-> **Status:** alpha (v0.3.3). Scores have been validated against PMDtools on real and synthetic data. Performance benchmarks are in [docs/benchmarks.md](docs/benchmarks.md); a Bioconda package is still to come.
+pmdshodh scores every read in a SAM, BAM or CRAM file for ancient DNA damage, keeps or removes reads by score, and summarises damage patterns. It uses the scoring model of [PMDtools](https://github.com/pontussk/PMDtools) 0.60 and fixes PMDtools' known errors by default; `--pmdtools-compat` reproduces PMDtools for comparisons. It reads and writes alignments directly and runs on multiple threads.
+
+> **Status: alpha.** Scores have been validated read by read against PMDtools on real and synthetic data ([validation](#validation)).
 
 ## Contents
 
 - [Overview](#overview)
-- [Features](#features)
 - [Installation](#installation)
 - [Quick start](#quick-start)
 - [Commands](#commands)
@@ -17,6 +23,7 @@ pmdshodh scores every read in a SAM, BAM or CRAM file for ancient DNA damage, ke
 - [Output](#output)
 - [Compatibility with PMDtools](#compatibility-with-pmdtools)
 - [Limitations](#limitations)
+- [Citation](#citation)
 - [Development](#development)
 - [License](#license)
 
@@ -24,25 +31,30 @@ pmdshodh scores every read in a SAM, BAM or CRAM file for ancient DNA damage, ke
 
 Ancient DNA molecules carry characteristic damage. Cytosine deamination appears as C→T substitutions near the 5′ end of reads, and as G→A near the 3′ end in double-stranded libraries. The PMD score of [Skoglund et al. (2014)](https://doi.org/10.1073/pnas.1318934111) is a per-read log-likelihood ratio comparing a damage model with a no-damage model. Reads scoring above a threshold (commonly 3) are likely to be ancient rather than modern contamination.
 
-pmdshodh implements this score as a single program, with no `samtools calmd | python | samtools view` pipeline. It does not classify taxa, estimate contamination, call genotypes or rescale base qualities.
+pmdshodh computes this score in a single program, with no `samtools calmd | python | samtools view` pipeline:
 
-## Features
-
-- **PMDtools-compatible scores.** It uses the same likelihood model, defaults and options (`--threshold`, `--ss`, `--CpG`, `--UDGhalf`, `-m`, `-q`, …). Single-stranded (`--ss`) scores follow the paper's model and are lower than PMDtools'; see [Differences that change scores](#differences-that-change-scores).
-- **Direct SAM/BAM/CRAM input, SAM/BAM output.** Kept records are written unchanged and in input order, with an `@PG` header line. CRAM is decoded with the reference given by `-r`.
-- **Multi-threaded** scoring and BGZF compression. Results are identical for any thread count.
+- **PMDtools-compatible scores:** the same likelihood model, defaults and options (`--threshold`, `--ss`, `--CpG`, `--UDGhalf`, `-m`, `-q`, …). Single-stranded scores follow the paper's model and are lower than PMDtools' ([details](#differences-that-change-scores)).
+- **Direct SAM, BAM and CRAM input, SAM and BAM output.** Kept records are written unchanged and in input order, with an `@PG` header line.
+- **Multi-threaded** scoring and BGZF compression, with identical results for any thread count.
 - **JSON run summary** with read counts, a score histogram and damage tables, designed for MultiQC.
-- **HTML damage report** from one or more run summaries: damage by position, score and length histograms, read counts. One self-contained file with no JavaScript or network access.
-- **Robust input handling.** It never drops reads silently: every skipped read is counted by reason, and invalid input stops with a clear error.
-- **Correct by default, exact on request.** Known PMDtools bugs are fixed, and `--pmdtools-compat` reproduces PMDtools exactly for comparisons.
+- **Self-contained HTML damage report** from one or more run summaries, with no JavaScript or network access.
+- **No silent data loss:** every skipped read is counted by reason, and invalid input stops with a clear error.
+
+pmdshodh does not classify taxa, estimate contamination, call genotypes or rescale base qualities.
 
 ## Installation
 
-**pip:** `pip install pmdshodh` installs the `pmdshodh` command; the wheels contain the compiled binary only. Wheels are built for Linux x86_64 and aarch64 (glibc 2.17 or newer), macOS arm64 and x86_64, and Windows x86_64.
+| Method | Command |
+|---|---|
+| Bioconda | `conda install -c conda-forge -c bioconda pmdshodh` |
+| pip | `pip install pmdshodh` |
+| Prebuilt binary | download from [GitHub Releases](https://github.com/dpatel511/pmdshodh/releases) |
+| From source | `cargo build --release` (Rust 1.91 or newer) |
 
-**Prebuilt binaries:** download the archive for your platform from [GitHub Releases](https://github.com/dpatel511/pmdshodh/releases), e.g. `pmdshodh-0.3.3-x86_64-unknown-linux-gnu.tar.gz`, and check it against `SHA256SUMS`. Linux binaries need glibc 2.17 or newer (CentOS/RHEL 7 and later). Builds are for Linux x86_64 and aarch64, macOS arm64 and x86_64, and Windows x86_64.
-
-**From source:** this needs Rust 1.91 or newer, the minimum of the noodles dependency. CI tests 1.91 and the latest stable.
+- **pip** wheels contain the compiled binary only and install the `pmdshodh` command.
+- **Prebuilt archives** are named `pmdshodh-<version>-<target>`; check them against `SHA256SUMS`.
+- **Platforms:** wheels and binaries are built for Linux x86_64 and aarch64 (glibc 2.17 or newer: CentOS/RHEL 7 and later), macOS arm64 and x86_64, and Windows x86_64.
+- **From source:** Rust 1.91 is the minimum of the noodles dependency, and CI tests it as well as the latest stable release.
 
 ```bash
 git clone https://github.com/dpatel511/pmdshodh.git
@@ -51,10 +63,13 @@ cargo build --release
 ./target/release/pmdshodh --version
 ```
 
-**Input requirement:** pmdshodh needs each read's reference bases. Either pass the reference with `-r`, or give it reads with an **MD tag**.
+### Reference bases: MD tags or `-r`
+
+pmdshodh needs each read's reference bases. Either pass the reference with `-r`, or give it reads with an **MD tag**.
+
 - **With `-r ref.fa`:** the FASTA must be indexed with `samtools faidx`. Reference bases come from the FASTA, so reads need no MD tag. Any MD tags present are checked against the reference, and stale ones are counted.
-- **CRAM input** always needs `-r`, with the reference the CRAM was written against. Each reference sequence is checked against the `M5` checksum in the CRAM header when it is loaded, so a different reference is an input error rather than silently wrong reads and scores. (samtools writes `M5`; without it, only single-reference slices are checked, against their own MD5.) `REF_PATH`, `REF_CACHE` and downloads are not used.
-- **Without `-r`:** every mapped read needs an MD tag. If your aligner doesn't write one, add it with `samtools calmd -b input.bam reference.fa > input.md.bam`.
+- **CRAM input** always needs `-r`, with the reference the CRAM was written against. Each reference sequence is checked against the `M5` checksum in the CRAM header when it is loaded. A different reference is therefore an input error, instead of giving wrong reads and scores without warning. samtools writes `M5`; without it, only single-reference slices are checked, against their own MD5. `REF_PATH`, `REF_CACHE` and downloads are not used.
+- **Without `-r`:** every mapped read needs an MD tag. If your aligner does not write one, add it with `samtools calmd -b input.bam reference.fa > input.md.bam`.
 
 ## Quick start
 
@@ -90,13 +105,11 @@ pmdshodh filter --threshold 3 -r ref.fa sample.cram -o sample.pmd3.bam
 | `damage` | Summarise damage without filtering | JSON run summary |
 | `report` | Report on run summaries (never re-reads alignments) | One HTML file (`-o -` writes it to stdout) |
 
-`filter` keeps reads with score **≥ `--threshold`** and/or **< `--upper-threshold`**; at least one is required.
-
-Run `pmdshodh <command> --help` for every option, grouped by purpose, with examples.
+`filter` keeps reads with score **≥ `--threshold`** and/or **< `--upper-threshold`**; at least one is required. Run `pmdshodh <command> --help` for every option, grouped by purpose, with examples.
 
 ## Options
 
-PMDtools option names are accepted as aliases (shown in the second column).
+PMDtools option names are accepted as aliases (second column).
 
 ### Library and treatment
 
@@ -135,26 +148,26 @@ Each is between 0 and 1, and `--pmd-p` + `--pmd-c` (the damage rate at the read 
 | `--summary FILE` | `filter`, `score` | Also write the JSON run summary. |
 | `--range N` | all | Positions from each read end in damage tables (default 30, from 1 to 1000). |
 | `-n, --max-reads N` | `damage` | Stop after N reads. |
-| `-@, --threads N` | all | Threads (default 1, at most 1024): at most N do work at once, so you can pass your CPU allocation. |
+| `-@, --threads N` | all | Threads (default 1, at most 1024). At most N do work at once, so you can pass your CPU allocation. |
 | `-r, --reference FILE` | all | Indexed reference FASTA (`samtools faidx`; bgzip also needs `.gzi`). Reference bases come from it instead of MD tags, and MD tags are checked against it. Every header sequence must be in it with the same length. |
-| `--pmdtools-compat` | all | Reproduce PMDtools 0.60 exactly, including its bugs. |
+| `--pmdtools-compat` | all | Reproduce PMDtools 0.60, including its bugs ([limits](#limitations)). |
 | `--quiet` | all | Suppress the summary line on stderr. |
 
 ## Output
 
 ### Alignments (`filter`)
 
-- Kept records are unchanged (identical when decoded) apart from the optional score tag. From CRAM input, records are written as stored in the CRAM: MD and NM tags that htslib left out because it can regenerate them are not added back (see [Limitations](#limitations)).
-- Input order is preserved.
+- Kept records are unchanged (identical when decoded) apart from the optional score tag, and input order is preserved.
 - The input header is copied, and one `@PG` line records the command.
-- Output files are written under a temporary name and renamed only on success, so a failed run never leaves a partial file. A symlink is followed and the file it points to is replaced. FIFOs and devices (`/dev/null`, `NUL` on Windows, `/dev/stdout`, `>(...)`) are written in place.
-- If Ctrl-C, SIGTERM (e.g. a scheduler's time limit) or SIGHUP ends the run, the temporary files are removed first, and the process still ends by that signal (status 130, 143 or 129).
+- From CRAM input, records are written as stored in the CRAM. MD and NM tags that htslib left out, because it can regenerate them, are not added back ([limitations](#limitations)).
 - The output format comes from a `.bam` or `.sam` extension (any case). For stdout and devices, which have none, `--output-format` decides, BAM by default: `-o /dev/null --summary run.json` keeps only the summary.
+- Output files are written under a temporary name and renamed only on success, so a failed run never leaves a partial file. A symlink is followed and the file it points to is replaced. FIFOs and devices (`/dev/null`, `NUL` on Windows, `/dev/stdout`, `>(...)`) are written in place.
+- If Ctrl-C, SIGTERM (for example a scheduler's time limit) or SIGHUP ends the run, the temporary files are removed first, and the process still ends by that signal (status 130, 143 or 129).
 - An output may not be the input, the reference or another output (exit 2).
 
 ### JSON run summary
 
-A single file per run, versioned with `format_version` (currently `4`). It contains:
+One file per run, versioned with `format_version` (currently `4`):
 
 | Section | Contents |
 |---|---|
@@ -171,20 +184,22 @@ A single file per run, versioned with `format_version` (currently `4`). It conta
 
 - the run: input, reference, command line, library, treatment, model parameters and thresholds;
 - read counts, skipped reads by reason, flag counts and, with `-r`, MD tag agreement;
-- damage by position in percent, positions from 1: 5′ C→T, and 3′ G→A for double-stranded or 3′ C→T for single-stranded libraries, with all other substitutions as a dashed baseline; and the first-base C→T rate with its standard error;
+- damage by position in percent, from position 1: 5′ C→T, and 3′ G→A for double-stranded or 3′ C→T for single-stranded libraries, with all other substitutions as a dashed baseline; and the first-base C→T rate with its standard error;
 - the PMD score histogram as a percentage of scored reads, with the thresholds marked and, for `filter`, the fraction of scored reads kept;
-- read lengths of scored reads and, for `filter`, of kept reads in a chart of their own.
+- read lengths of scored reads and, for `filter`, of kept reads in a separate chart.
 
-With several summaries, an "All samples" section overlays their damage curves and score histograms. Samples are labelled by the input's file name, with the summary's file name added when two would clash. The file uses inline SVG, with no JavaScript, external files or network access, so it opens offline or as an e-mail attachment. The same summaries give a byte-identical report. Plotted values are also in `data-values` attributes, so scripts can check them against the JSON. An unreadable or invalid summary, or an unsupported `format_version`, exits with status 2 and names the file and field.
+With several summaries, an "All samples" section overlays their damage curves and score histograms. Samples are labelled by the input's file name, with the summary's file name added when two would clash.
+
+The file uses inline SVG, with no JavaScript, external files or network access, so it opens offline or as an e-mail attachment. The same summaries give a byte-identical report, and plotted values are also in `data-values` attributes, so scripts can check them against the JSON. An unreadable or invalid summary, or an unsupported `format_version`, exits with status 2 and names the file and field.
 
 ### Exit status and streams
 
 | Exit status | Meaning |
 |---|---|
 | `0` | Success, including input with only a header |
-| `1` | Runtime failure, e.g. the output cannot be written |
-| `2` | Invalid options or invalid input, e.g. a mapped read without an MD tag (the read is named in the message), or an input with no data at all |
-| `141` | The reader of stdout closed it early (e.g. `\| head`): pmdshodh stops without a message, as samtools does when SIGPIPE ends it |
+| `1` | Runtime failure, for example the output cannot be written |
+| `2` | Invalid options or invalid input, for example a mapped read without an MD tag (the read is named in the message), or an input with no data at all |
+| `141` | The reader of stdout closed it early (for example `\| head`): pmdshodh stops without a message, as samtools does when SIGPIPE ends it |
 
 Results go to stdout only when requested (`-o -`, or `score`/`damage` without `-o`). The run summary line and errors go to stderr.
 
@@ -200,15 +215,16 @@ pmdshodh was built from the published model and black-box testing of PMDtools 0.
 | Synthetic reads with clips, indels and `=`/`X` CIGARs, both strands, 8 modes | 1,500 per mode | 8.3 × 10⁻¹⁴ ¹ |
 | nf-core/eager test BAMs (mammoth mtDNA, human 1240k capture), ds, `--CpG`, `--UDGhalf`, `--ss` | 13,670 per mode | 3.0 × 10⁻¹⁴ ¹ |
 | Real single-stranded library, not UDG-treated (ENA PRJEB37007, UKY001.B0102: mtDNA and 1240k capture), `--ss` | 281,906 and 14,461,790 | 8.2 × 10⁻¹⁴ ¹ |
+| Real libraries: single-stranded USER-treated (ERR7195621), ds UDG-half (ERR4589292), ds full UDG (ERR1995180), in the modes each implies plus untreated | 273,326, 755,825 and 141,943 | 4.4 × 10⁻¹⁴ ¹ |
 | Damage tables vs `pmdtools --deamination --range 30` (no UDG, UDG-half and full UDG) | 1,500 | identical at all 30 positions |
 
 ¹ With `--pmdtools-compat`. Without it, scores differ only where PMDtools has a bug (below).
 
-Methods and full results: [docs/blackbox.md](docs/blackbox.md).
+Methods and full results: [docs/blackbox.md](https://github.com/dpatel511/pmdshodh/blob/main/docs/blackbox.md) and the 0.3 audit, [docs/audit-0.3.md](https://github.com/dpatel511/pmdshodh/blob/main/docs/audit-0.3.md).
 
 ### Differences that change scores
 
-pmdshodh corrects these PMDtools behaviours by default. Use `--pmdtools-compat` to reproduce them.
+pmdshodh corrects these PMDtools behaviours by default. `--pmdtools-compat` reproduces them.
 
 | PMDtools 0.60 behaviour | Effect | pmdshodh default |
 |---|---|---|
@@ -217,19 +233,20 @@ pmdshodh corrects these PMDtools behaviours by default. Use `--pmdtools-compat` 
 | `--ss` counts every C site twice (the double-stranded term plus the paper's single-stranded term, SI Eq. S1) | ss scores are about twice as large as the model gives, and lopsided: a terminal C→T scores 9.68 at the 5′ end and 6.34 at the 3′ end (Q40), so a threshold of 3 is far looser than for ds libraries | One term per C site (Eq. S1): 4.65 at either end. **ss scores are lower than PMDtools'; re-check thresholds tuned on PMDtools ss scores** |
 | `--upperthreshold` keeps reads with no informative sites (score 0) | Reads with no C/G evidence at all are output as "non-damaged" | Not kept by `--upper-threshold` (still counted as `no_informative_sites`) |
 | Lowercase reference bases in MD (outside the SAM spec) are never counted as C or G | 339 of 14.0 M reads scored differently on a public horse BAM (ENA ERR1892229) | Read as uppercase |
-| On reverse-strand reads, MD characters other than `ACGTNRY`/`acgt` (e.g. lowercase `n`) are dropped when the reference is reverse-complemented | The reference shifts against the read; scores up to 15.7 too high | No shift |
+| On reverse-strand reads, MD characters other than `ACGTNRY`/`acgt` (for example lowercase `n`) are dropped when the reference is reverse-complemented | The reference shifts against the read; scores up to 15.7 too high | No shift |
 | Read bases written as `=` (same as the reference; `samtools calmd -e`) never count as C or G | Matches at those sites are missed: a read with nine `=` at reference C scored 5.03 from 1 site instead of 4.22 from 10 | Taken from `-r`; without `-r`, an input error (MD does not give their reference bases) |
 
 **In CpG modes, expect pmdshodh's default results to differ from PMDtools on some reads.**
 
 ### Differences that prevent crashes or data loss
 
-| Situation | PMDtools 0.60 | pmdshodh |
+| Situation | PMDtools 0.60 | pmdshodh default |
 |---|---|---|
 | Mapped read without an MD tag | Dropped silently | Error (exit 2); with `-r`, scored from the reference |
 | MD string without a `0` after a deletion (as written by MALT) | Misparsed silently | Parsed correctly |
-| Hard-clipped reads | Dropped | Scored |
-| `--threshold` ≤ −10000 (e.g. `-1000000` to keep every read), unless `--upperthreshold` is below 1,000,000; or `--upperthreshold` ≥ 1,000,000 alone | Counted as not given: no reads written, no message | Applied as given |
+| Hard-clipped reads | Dropped | Scored (compat drops them, counted as `unsupported_cigar`) |
+| Reads whose SEQ is 1 base | Dropped silently | Scored (compat drops them, counted as `too_short`) |
+| `--threshold` ≤ −10000 (for example `-1000000` to keep every read), unless `--upperthreshold` is below 1,000,000; or `--upperthreshold` ≥ 1,000,000 alone | Counted as not given: no reads written, no message | Applied as given (compat keeps no reads, with a note on stderr) |
 | Existing `DS:Z` tag, or `DS:Z:` text in qualities | Crash | Handled |
 | Input with only a header | Crash | Empty output, exit 0 |
 | BAM without its end-of-file marker (cut at a block boundary) | `samtools view` warns and passes on the reads before the cut | Error (exit 2), no output file |
@@ -238,23 +255,36 @@ pmdshodh corrects these PMDtools behaviours by default. Use `--pmdtools-compat` 
 
 ### Behaviour kept for compatibility
 
-These are part of PMDtools' score as computed, and pmdshodh keeps them so that scores mean the same:
+pmdshodh keeps these parts of PMDtools' score as computed, so that scores mean the same:
 
 - The no-damage model assumes a background damage rate of 0.001.
 - Reads are scored regardless of SAM flags (duplicates, secondary and supplementary alignments, paired reads). Remove unwanted reads beforehand; the summary counts them.
 
-The complete list, with reasoning: [docs/design.md](docs/design.md) §5.
+The complete list, with reasoning: [docs/design.md](https://github.com/dpatel511/pmdshodh/blob/main/docs/design.md) §5.
 
 ## Limitations
 
-- CRAM is input only; `filter` writes SAM or BAM.
-- From CRAM input, kept records have no MD or NM tag unless the CRAM stored one. htslib usually leaves these tags out and regenerates them on decoding; pmdshodh does not. Run `samtools calmd` on the output if a later step needs MD.
-- CRAM input must be scored against the reference it was written with, so a masked FASTA (as nf-core/eager uses to mask positions) fails the checksum check. Mask BAM input instead, or decode the CRAM to BAM first.
-- CRAM input loads whole reference sequences, because noodles decodes against them. With `filter -r -@ 8`, CRAM took 38.7 s (horse) and 58.5 s (human) with peak memory of 1,190 MB and 1,248 MB, against 12.6 s and 14.8 s with 112 MB for the same reads as BAM (median of 5 runs, [docs/benchmarks.md](docs/benchmarks.md)). CRAM input also checks every reference sequence against its checksum ([docs/design.md](docs/design.md) §11).
-- Scores can differ in the last digits between operating systems, because each platform's math library rounds `ln` and `powf` differently. On the test fixture, Windows differed from Linux and macOS by at most 1.8e-15. Only a score this close to a threshold could be filtered differently.
-- Benchmarks cover one laptop and two double-stranded libraries: [docs/benchmarks.md](docs/benchmarks.md). On one thread, `pmdshodh filter` was 32–39× faster than the PMDtools pipeline, and `pmdshodh score` was faster than metaDMG `pmd` in all 10 alternating pairs: 48.8 s against 61.7 s and 60.6 s against 71.9 s (medians).
-- `--pmdtools-compat` does not reproduce PMDtools on `=` read bases (`samtools calmd -e` output) for reverse-strand reads, which PMDtools scores as if their explicit bases were at the read end, or for reads made only of `=`, which PMDtools drops. Default mode resolves `=` from `-r` ([docs/design.md](docs/design.md) §5).
-- One real single-stranded library has been tested (ENA PRJEB37007, not UDG-treated; CHANGELOG.md). Single-stranded UDG-half and full-UDG scoring rests on synthetic reads.
+- **CRAM** is input only; `filter` writes SAM or BAM.
+- **MD and NM from CRAM:** kept records have no MD or NM tag unless the CRAM stored one. htslib usually leaves these tags out and regenerates them on decoding; pmdshodh does not. Run `samtools calmd` on the output if a later step needs MD.
+- **CRAM reference:** CRAM input must be scored against the reference it was written with, so a masked FASTA (as nf-core/eager uses to mask positions) fails the checksum check. Mask BAM input instead, or decode the CRAM to BAM first.
+- **CRAM speed and memory:** CRAM input loads whole reference sequences, because noodles decodes against them. With `filter -r -@ 8`, CRAM took 38.7 s (horse) and 58.5 s (human) with peak memory of 1,190 MB and 1,248 MB, against 12.6 s and 14.8 s with 112 MB for the same reads as BAM (median of 5 runs, [docs/benchmarks.md](https://github.com/dpatel511/pmdshodh/blob/main/docs/benchmarks.md)). CRAM input also checks every reference sequence against its checksum ([docs/design.md](https://github.com/dpatel511/pmdshodh/blob/main/docs/design.md) §11).
+- **Last-digit differences between platforms:** each platform's math library rounds `ln` and `powf` differently. On the test fixture, Windows differed from Linux and macOS by at most 1.8e-15. Only a score this close to a threshold could be filtered differently.
+- **Benchmarks** cover one laptop and two double-stranded libraries ([docs/benchmarks.md](https://github.com/dpatel511/pmdshodh/blob/main/docs/benchmarks.md)). On one thread, `pmdshodh filter` was 32–39× faster than the PMDtools pipeline, and `pmdshodh score` was faster than metaDMG `pmd` in all 10 alternating pairs: 48.8 s against 61.7 s and 60.6 s against 71.9 s (medians).
+- **What `--pmdtools-compat` does not reproduce:**
+  - `=` read bases (`samtools calmd -e` output) on reverse-strand reads, which PMDtools scores as if their explicit bases were at the read end;
+  - reads made only of `=`, which PMDtools drops (default mode resolves `=` from `-r`);
+  - lowercase bases in SAM SEQ, which PMDtools does not recognise and pmdshodh reads as uppercase;
+  - mapped reads with CIGAR `*` and an MD tag, which PMDtools scores from the MD and pmdshodh rejects (exit 2).
+
+  See [docs/design.md](https://github.com/dpatel511/pmdshodh/blob/main/docs/design.md) §5.
+- **Single-stranded libraries:** two real ones have been tested, one not UDG-treated (PRJEB37007) and one USER-treated (ERR7195621, in ss and ss `--UDGhalf` modes). Single-stranded full-UDG scoring rests on synthetic reads.
+
+## Citation
+
+pmdshodh has no paper of its own. If you use it, please cite the PMD score's original description and this repository:
+
+- Skoglund P, Northoff BH, Shunkov MV, et al. (2014). Separating endogenous ancient DNA from modern day contamination in a Siberian Neandertal. *PNAS* 111(6):2229–2234. [doi:10.1073/pnas.1318934111](https://doi.org/10.1073/pnas.1318934111)
+- pmdshodh, <https://github.com/dpatel511/pmdshodh>, with the version you used (`pmdshodh --version`).
 
 ## Development
 
@@ -266,8 +296,8 @@ cargo test
 
 - **Reference data:** the tests compare against values produced by PMDtools 0.60, stored in `tests/data/`. The scripts in `tests/oracle/` regenerate them; they need PMDtools 0.60 on Linux or WSL.
 - **Readable model:** `tests/oracle/pmd_reference.py` is a short Python version of the scoring model.
-- **Background:** research, design decisions and black-box findings are in [docs/](docs/).
+- **Background:** research, design decisions, black-box findings and the 0.3 audit are in [docs/](https://github.com/dpatel511/pmdshodh/tree/main/docs). Changes are listed in [CHANGELOG.md](https://github.com/dpatel511/pmdshodh/blob/main/CHANGELOG.md).
 
 ## License
 
-[MIT](LICENSE).
+[MIT](https://github.com/dpatel511/pmdshodh/blob/main/LICENSE).
