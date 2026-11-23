@@ -87,6 +87,7 @@ PMDS is the sum over sites. **A read with no informative sites scores exactly 0.
   - the "next reference base" of a C is the reference base at the next SEQ position, and the "previous" one for a G is the previous SEQ position;
   - deleted reference bases are skipped (C, deleted A, then G counts as CpG);
   - an inserted or soft-clipped neighbour has no reference base, so the site is not CpG.
+  - pmdshodh does the same in both modes (design.md §5, audit O1).
 - **`--UDGhalf` terminal exception** applies to SEQ position 1 (a 5′ C) and the last SEQ position (a 3′ G). After a soft clip, the first aligned base is not terminal.
   - With `--ss` the exception applies only to the molecule's 5′ first base, not its last base.
 - **`=` and `X`** CIGAR operations are scored like `M`. **`N` and `H`** make PMDtools drop the read with a stderr message.
