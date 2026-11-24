@@ -27,10 +27,12 @@ def revcomp(s):
     return s.translate(COMPLEMENT)[::-1]
 
 
-def observed_curves(path, library):
-    """Per-position damage rates from a pmdshodh summary's damage tables, minus the
-    transversion rate (C>A plus C>G at the 5' end) as a stand-in for errors. Returns the
-    5' curve and the 3' curve as lists indexed from 0 (the terminal base)."""
+def observed_curves(path, library, background="transversion"):
+    """Per-position damage rates from a pmdshodh summary's damage tables, minus a background.
+    `transversion`: the pooled C>A plus C>G rate at the 5' end (errors only). `transition`: at
+    each position, the transition damage does not cause there (ds: 5' G>A and 3' C>T; ss: G>A
+    at both ends), which also removes divergence. Returns the 5' and 3' curves as lists indexed
+    from 0 (the terminal base)."""
     s = json.load(open(path))
     d = s["damage"]
     r = d["range"]
@@ -45,10 +47,50 @@ def observed_curves(path, library):
 
     c5 = d["five_prime"]["C"]
     n5 = sum(sum(c5[b][i] for b in BASES) for i in range(r))
-    background = sum(c5["A"][i] + c5["G"][i] for i in range(r)) / n5 if n5 else 0.0
+    tv = sum(c5["A"][i] + c5["G"][i] for i in range(r)) / n5 if n5 else 0.0
     five = rates("five_prime", "C", "T")
     three = rates("three_prime", "C", "T") if library == "ss" else rates("three_prime", "G", "A")
-    return ([max(x - background, 0.0) for x in five], [max(x - background, 0.0) for x in three])
+    if background == "transition":
+        bg5 = rates("five_prime", "G", "A")
+        bg3 = rates("three_prime", "G", "A") if library == "ss" else rates("three_prime", "C", "T")
+        five = [max(x - b, 0.0) for x, b in zip(five, bg5)]
+        three = [max(x - b, 0.0) for x, b in zip(three, bg3)]
+        if library == "ss":
+            lengths = {int(k): v for k, v in s["length_histogram"]["scored"].items()}
+            return unmix_ss(five, three, lengths)
+        return five, three
+    return ([max(x - tv, 0.0) for x in five], [max(x - tv, 0.0) for x in three])
+
+
+def unmix_ss(obs5, obs3, lengths, iters=500):
+    """Single-stranded tables pool reads of all lengths, so a short read's 5' table also holds
+    damage from its 3' end (and the other way round). Find the per-end curves d5, d3 whose
+    pooled expectation, E_n[1 - (1 - d5(z)) (1 - d3(n - z + 1))] over the read-length
+    distribution, matches the observed tables. Positions past the table use its last value.
+    Fixed-point iteration on the residuals."""
+    r = len(obs5)
+
+    def at(c, z):
+        return c[min(z, r) - 1]
+
+    def pooled(d5, d3, z, from_five):
+        num = den = 0.0
+        for n, w in lengths.items():
+            if n < z:
+                continue
+            other = n - z + 1
+            a, b = (at(d5, z), at(d3, other)) if from_five else (at(d5, other), at(d3, z))
+            num += w * (1 - (1 - a) * (1 - b))
+            den += w
+        return num / den if den else 0.0
+
+    d5, d3 = list(obs5), list(obs3)
+    for _ in range(iters):
+        p5 = [pooled(d5, d3, z, True) for z in range(1, r + 1)]
+        p3 = [pooled(d5, d3, z, False) for z in range(1, r + 1)]
+        d5 = [min(max(d + o - p, 0.0), 1.0) for d, o, p in zip(d5, obs5, p5)]
+        d3 = [min(max(d + o - p, 0.0), 1.0) for d, o, p in zip(d3, obs3, p3)]
+    return d5, d3
 
 
 class Damage:
@@ -57,7 +99,16 @@ class Damage:
     def __init__(self, args):
         self.model = args.model
         if self.model == "observed":
-            self.five, self.three = observed_curves(args.observed, args.library)
+            self.five, self.three = observed_curves(
+                args.observed, args.library, getattr(args, "observed_background", "transversion")
+            )
+            target = getattr(args, "observed_terminal", None)
+            if target is not None:
+                # Shape only: real profiles are pooled over damaged and undamaged reads, so
+                # scale both ends' curves to put the 5' terminal base at `target`.
+                k = target / self.five[0]
+                self.five = [min(x * k, 1.0) for x in self.five]
+                self.three = [min(x * k, 1.0) for x in self.three]
         else:
             a, q, c = args.amplitude, args.decay, args.floor
             excess = args.terminal_excess if self.model == "terminal" else 0.0
@@ -193,6 +244,17 @@ def main():
     p.add_argument("--floor", type=float, default=0.01, help="C: damage at every position")
     p.add_argument("--terminal-excess", type=float, default=0.10)
     p.add_argument("--observed", help="pmdshodh summary whose damage tables give the curve")
+    p.add_argument(
+        "--observed-background",
+        choices=["transversion", "transition"],
+        default="transversion",
+        help="what is subtracted from the observed rates (see observed_curves)",
+    )
+    p.add_argument(
+        "--observed-terminal",
+        type=float,
+        help="use the observed profile's shape only, scaled so the 5' terminal base has this damage",
+    )
     p.add_argument("--undamaged", type=float, default=0.5, help="share of undamaged reads")
     p.add_argument("--length-mean", type=float, default=45.0)
     p.add_argument("--length-sd", type=float, default=15.0)

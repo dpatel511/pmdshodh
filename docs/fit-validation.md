@@ -76,7 +76,7 @@ The oracle in 1.3 had no divergence. In step 3 the exact model gained it: the sa
 
 ### 1.4 Open point for the observed-profile runs
 
-Observed profiles come from pooled real libraries, so they already include their undamaged reads. The simulator applies such a profile to damaged reads only, and then adds undamaged reads, which dilutes it twice. Before the observed-profile runs (study step 4), the profile is either rescaled, or the runs are reported as testing its shape only.
+Observed profiles come from pooled real libraries, so they already include their undamaged reads. The simulator applies such a profile to damaged reads only, and then adds undamaged reads, which dilutes it twice. Before the observed-profile runs (study step 4), the profile is either rescaled, or the runs are reported as testing its shape only. Decided 2026-11-24: shape only, scaled to a fixed terminal level (section 3).
 
 ## 2. Core runs (study step 3, 2026-11-24)
 
@@ -132,3 +132,52 @@ Commands (pmdshodh 0.3.3; WSL Ubuntu 24.04, Python 3.12):
 PMDSHODH=pmdshodh tests/sim/run_case.sh base1 --seed 11 --reads 400000 --divergence 0.001
 ```
 The other cases add `--amplitude`, `--decay`, `--model terminal`, `--undamaged`, `--length-mean 80 --length-sd 25`, `--undamaged-length-mean 70 --undamaged-length-sd 25`, `--library ss`, and `--treatment half --fasta rCRS.fa`, with seeds 12–82. `tests/sim/evaluate.py` gives each case's numbers.
+
+## 3. Real damage shapes (study step 4, 2026-11-24)
+
+The damaged reads take their damage from five real libraries' tables, by shape only. Each profile is scaled so the 5′ terminal base has 31% damage, the default curve's value (`--observed-terminal 0.31`). Everything else is as in the base case: 400,000 reads, divergence 0.001, undamaged share 0.5, mean length 45 bp.
+
+The profile is the C→T rate (ds 3′: G→A) minus, at each position, the transition that damage does not cause there (`--observed-background transition`):
+- ds: 5′ G→A and 3′ C→T;
+- ss: G→A at both ends.
+
+This also removes divergence from the reference. A first attempt subtracted only the transversion rate. It left BER11's interior G→A of about 1.7%, which is divergence from the horse reference, inside the "damage", and inflated BER11's ceiling to +9.2. That attempt is not reported further.
+
+Single-stranded tables pool reads of every length, so a short read's 5′ table also holds damage from its 3′ end. `simulate.py` unmixes them using the library's own length histogram, solving for the per-end curves whose pooled expectation matches the tables. In the interior the two ends cannot be told apart: UKY001's interior damage moves wholly to the 3′ curve. Its total, about 7% C→T throughout the molecule against 0.12% G→A, is what matters for scoring.
+
+| Profile (source) | Scaled shape, 5′ z = 1, 2, 3, 5, 10, 20, 30 | Default kept | Fitted | True curve | Oracle |
+|---|---|---|---|---|---|
+| BER11_L_NOuser (ds, no UDG) | 0.31, 0.21, 0.17, 0.14, 0.06, 0.04, 0.02 | 30.3% | +1.2 | +3.0 | +4.3 |
+| JK2782 (ds, no UDG) | 0.31, 0.16, 0.14, 0.05, 0.05, 0.02, 0.00 | 29.6% | +0.1 | +1.8 | +2.3 |
+| I8525 (ds, UDG-half, rCRS) | 0.31, 0.20, 0.08, 0.03, 0.01, 0.00, 0.00 | 14.5% | −0.0 | −0.0 | +0.1 |
+| UKY001.B0102 MT (ss, no UDG) | unmixed 5′: 0.31, 0.15, 0.07, 0.06, 0.02, 0, 0; 3′: 0.26 at the end, 0.10 at z = 20–30 | 46.7% | +0.7 | +5.1 | **+6.2** |
+| I19359 (ss, USER) | 0.31, then 0 (3′: 0.27, 0.17, then 0) | 14.7% | +0.1 | +0.3 | +0.4 |
+
+The measure and the columns are as in section 2. The UKY001 shape is given in the scaled units (unmixed 0.223 at z = 1, times 0.31/0.223).
+
+**Raising PMDtools' floor C** (`--PMDconstant`, an existing option) with P kept at 0.3:
+
+| Profile | C 0.02 | C 0.035 | C 0.05 | C 0.07 | Oracle |
+|---|---|---|---|---|---|
+| UKY001 (ss) | +2.0 | +3.2 | +4.3 | +4.2 | +6.2 |
+| BER11 (ds) | +1.6 | +1.7 | +1.7 | +0.9 | +4.3 |
+
+What the real shapes show:
+1. **Real shapes leave more room than the geometric curve,** because real profiles have long interior tails that PMDtools' C = 0.01 underweights.
+2. **For ds libraries, the room stays under the margin.** The ceiling is +0.1 to +4.3 for the three ds profiles and +0.4 for the USER-treated ss one.
+3. **One profile clears the margin: UKY001,** untreated single-stranded, at +6.2 (true curve +5.1). Its about 7% interior C→T is the reason. A higher floor alone, `--PMDconstant 0.05`, recovers +4.3 of it. Fitting P recovers +0.7.
+4. **Fitting P stays within +1.2 everywhere.**
+
+Caveats:
+- Each shape is scaled to one terminal level.
+- The ss unmixing is not unique in the interior.
+- These are shapes in simulated reads, not real reads. Step 5, the labelled real-read mixture, can check the UKY001 result directly, since it is itself an untreated ss library.
+
+Commands:
+```
+PMDSHODH=pmdshodh tests/sim/run_case.sh tUKY001 --seed 93 --reads 400000 --divergence 0.001 \
+    --model observed --observed UKY001_MT.damage_ss.json --observed-terminal 0.31 \
+    --observed-background transition --library ss
+pmdshodh score --quiet --library ss --PMDconstant 0.05 uk.sam -o uk.c0.05.tsv
+```
+Seeds: BER11 91, JK2782 92, UKY001 93, I19359 94, I8525 95 (`--treatment half --fasta rCRS`).
