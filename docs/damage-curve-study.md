@@ -99,8 +99,11 @@ The undamaged reads get errors only. A test checks that pmdshodh's damage table 
 All scorers use PMDtools' per-read log-likelihood ratio, with the same sites, base qualities and null model. Only the ancient model's damage curve differs:
 - **Default:** P = 0.3, C = 0.01 (pmdshodh's default score).
 - **Fitted:** P = q from the fit to the run's pooled damage table, C = 0.01 (the earlier plan).
-- **Oracle:** the true curve the simulator used for damaged reads, including terminal excess. No fitted curve can beat it, so it is the ceiling for any change to the damage curve.
+- **True curve:** the curve the simulator used for damaged reads, including terminal excess, with pmdshodh's null model. This is the best any change to the damage curve alone can do.
+- **Oracle:** the exact likelihood ratio of the simulator's own model on the same sites: the true curve, and a null with no damage and no polymorphism. No scorer of these sites can beat it, so it is the ceiling (docs/fit-validation.md 1.3).
 - **Oracle with length:** the oracle plus the log-likelihood ratio of the read's length under the two populations' length distributions. It shows what read length adds.
+
+The gap between the true curve and the oracle measures what the null model costs. Real data have divergence and polymorphism, which the null model is there for, so the core runs use `--divergence 0.001`.
 
 Default and fitted scores come from pmdshodh itself (`--PMDpparam`). The oracle scorers are Python, built on tests/oracle/pmd_reference.py, which pmdshodh's own parity tests already check.
 

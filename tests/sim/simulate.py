@@ -169,8 +169,8 @@ def reference(args, rng):
                 elif line:
                     seq.append(line.upper())
         seq = "".join(seq)
-        if set(seq) - set(BASES):
-            sys.exit("the reference must contain only A, C, G and T")
+        if set(seq) - set(BASES + "N"):
+            sys.exit("the reference must contain only A, C, G, T and N")
         return name, seq
     gc = args.gc / 2
     weights = [0.5 - gc, gc, gc, 0.5 - gc]
@@ -200,6 +200,12 @@ def main():
     p.add_argument("--undamaged-length-sd", type=float, help="default: --length-sd")
     p.add_argument("--min-length", type=int, default=25)
     p.add_argument("--max-length", type=int, default=150)
+    p.add_argument(
+        "--divergence",
+        type=float,
+        default=0.0,
+        help="share of reference positions where the sample differs (the same for every read)",
+    )
     p.add_argument("--qual-min", type=int, default=20)
     p.add_argument("--qual-max", type=int, default=40)
     args = p.parse_args()
@@ -215,6 +221,13 @@ def main():
     if len(ref) < args.max_length:
         sys.exit("the reference is shorter than --max-length")
     damage = Damage(args)
+    # The sample's genome: the reference with --divergence of its positions changed.
+    sample = list(ref)
+    if args.divergence > 0:
+        for i, b in enumerate(sample):
+            if b != "N" and rng.random() < args.divergence:
+                sample[i] = rng.choice([x for x in BASES if x != b])
+    sample = "".join(sample)
 
     with open(f"{args.out}.fa", "w") as fa:
         fa.write(f">{name}\n")
@@ -235,10 +248,14 @@ def main():
                 n = draw_length(
                     rng, args.undamaged_length_mean, args.undamaged_length_sd, args.min_length, args.max_length
                 )
-            start = rng.randrange(len(ref) - n + 1)
-            fragment = ref[start : start + n]
+            while True:  # fragments never span an N
+                start = rng.randrange(len(ref) - n + 1)
+                fragment = ref[start : start + n]
+                if "N" not in fragment:
+                    break
+            source = sample[start : start + n]
             reverse = rng.random() < 0.5
-            mol = revcomp(fragment) if reverse else fragment
+            mol = revcomp(source) if reverse else source
             events = 0
             if damaged:
                 mol, events = damage_molecule(mol, damage, args.library, args.treatment, rng)

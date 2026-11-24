@@ -26,10 +26,19 @@ def main():
     p.add_argument("prefix", help="the simulator's output prefix")
     p.add_argument("summary", help="pmdshodh damage summary of PREFIX.sam")
     p.add_argument("--max-z", type=float, default=4.0)
+    p.add_argument(
+        "--population",
+        choices=["both", "damaged", "undamaged"],
+        default="both",
+        help="the summary covers only this population's reads (names ending _D or _U)",
+    )
     a = p.parse_args()
     params = json.load(open(f"{a.prefix}.params.json"))
     summary = json.load(open(a.summary))
     args = argparse.Namespace(**params)
+    if a.population != "both":
+        args.undamaged = 0.0 if a.population == "damaged" else 1.0
+    delta = args.divergence
     damage = Damage(args)
     ss = args.library == "ss"
     quals = range(args.qual_min, args.qual_max + 1)
@@ -75,7 +84,10 @@ def main():
             d = site_damage(end, z, n)
             num += wd * (d * (1 - eps) + (1 - d) * eps / 3) + wu * eps / 3
             den += wd + wu
-        return num / den
+        # With divergence, a share delta of reference C (or G) sites carries another base in the
+        # sample: the damage alternative (T or A) with a third of it, then sequencing errors.
+        # CpG context changes at diverged sites are ignored (second order in delta).
+        return (1 - delta) * num / den + delta / 3 * (1 - eps) + 2 * delta / 3 * eps / 3
 
     tables = {"five_prime": ("C", "T"), "three_prime": ("C", "T") if ss else ("G", "A")}
     worst = 0.0

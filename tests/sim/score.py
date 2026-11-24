@@ -47,7 +47,25 @@ def ss_term(is_match, a, b, q):
     )
 
 
-def score_read(seq, qual, ref, reverse, library, treatment, five, three):
+def exact_term(is_match, d, q):
+    """The exact log-likelihood ratio of the simulator's own model: damage d, then a sequencing
+    error with probability 10^(-q/10) to one of the other three bases; undamaged reads have
+    errors only, and there is no divergence from the reference."""
+    eps = 10 ** (-q / 10)
+    if is_match:
+        return math.log(((1 - d) * (1 - eps) + d * eps / 3) / (1 - eps))
+    return math.log((d * (1 - eps) + (1 - d) * eps / 3) / (eps / 3))
+
+
+def exact_ds_term(is_match, d, q):
+    return exact_term(is_match, d, q)
+
+
+def exact_ss_term(is_match, a, b, q):
+    return exact_term(is_match, 1 - (1 - a) * (1 - b), q)
+
+
+def score_read(seq, qual, ref, reverse, library, treatment, five, three, ds_term=ds_term, ss_term=ss_term):
     """src/sites.rs score_read, default mode, with damage curves `five(z)` and `three(z)` for
     the molecule's 5' and 3' ends. `seq`, `qual` and `ref` are in SAM orientation."""
     n = len(seq)
@@ -101,6 +119,13 @@ def main():
     p.add_argument("--pmd-p", type=float, default=0.3)
     p.add_argument("--pmd-c", type=float, default=0.01)
     p.add_argument("--length", action="store_true", help="add the read-length log-likelihood ratio")
+    p.add_argument(
+        "--null",
+        choices=["pmdshodh", "exact"],
+        default="pmdshodh",
+        help="pmdshodh: its null model and polymorphism rate (default); exact: the simulator's "
+        "own model, the exact likelihood ratio and so the ceiling on these sites",
+    )
     a = p.parse_args()
     params = json.load(open(f"{a.prefix}.params.json"))
     args = argparse.Namespace(**params)
@@ -136,6 +161,7 @@ def main():
                 args.treatment,
                 five,
                 three,
+                *((exact_ds_term, exact_ss_term) if a.null == "exact" else ()),
             )
             if a.length:
                 score += math.log(pmf_d[n] / pmf_u[n])
