@@ -181,3 +181,42 @@ PMDSHODH=pmdshodh tests/sim/run_case.sh tUKY001 --seed 93 --reads 400000 --diver
 pmdshodh score --quiet --library ss --PMDconstant 0.05 uk.sam -o uk.c0.05.tsv
 ```
 Seeds: BER11 91, JK2782 92, UKY001 93, I19359 94, I8525 95 (`--treatment half --fasta rCRS`).
+
+## 4. Real reads with known labels (study step 5, 2026-11-24)
+
+The mixture uses real ancient and real modern reads on the human mtDNA, so the label is each read's origin:
+- **Ancient:** UKY001.B0102 MT, an untreated single-stranded library (ENA ERR3991018; 281,906 reads), used as it is.
+- **Modern:** NA12878's mtDNA reads from 1000 Genomes phase 3. Only the `MT` region of `NA12878.mapped.ILLUMINA.bwa.CEU.low_coverage.20121211.bam` was fetched with `samtools view` (21.5 MB, 336,018 records, md5 `de47c7a8972efd40a74da6ef9ad1fdfd`). Its `MT` contig is the rCRS, the reference UKY001 was aligned to.
+
+`tests/sim/mix_real.py` draws 100,000 reads of each:
+- The modern reads with an all-match CIGAR are cut to one window each, with a length drawn from the ancient reads' own lengths.
+- The two groups end up alike in length (mean 51.8 and 51.9 bp) and base quality (mean 38.9 and 38.4).
+- MD tags are dropped, and pmdshodh takes reference bases from the rCRS (`-r`), in ss mode.
+
+The fitted scorer's P is the decay fitted to UKY001's own damage table (q = 0.203). The measure is as before: ancient reads kept when each scorer removes the same share of modern reads as the default does at threshold 3. That share is 99.86% (seed 101) and 99.87% (seed 102).
+
+| Scorer | Kept, seed 101 | Seed 102 |
+|---|---|---|
+| default (P 0.3, C 0.01) | 41.7% | 41.8% |
+| fitted P = 0.203 | +1.0 | +1.2 |
+| `--PMDconstant 0.02` | +1.4 | |
+| `--PMDconstant 0.035` | +3.4 | +3.3 |
+| `--PMDconstant 0.05` | +3.3 | +3.5 |
+| `--PMDconstant 0.07` | +3.6 | +3.6 |
+| `--PMDconstant 0.1` | +3.4 | |
+
+The real reads agree with the simulated UKY001 shape (section 3: C 0.05 +4.3, fitted P +0.7). Raising the floor C to 0.035–0.07 keeps about 3.5 points more ancient reads at the same removal of modern reads. The gain is flat across that range. Fitting P keeps about 1 point more.
+
+Caveats:
+- The ancient library carries its own unknown share of modern contamination, labelled "ancient" here, so every kept rate understates. The comparisons between scorers stand.
+- The modern windows come from anywhere in 101 bp reads, not from molecule ends.
+- This is one library and one modern sample.
+
+Commands:
+```
+samtools view -b -o NA12878.MT.bam https://ftp.1000genomes.ebi.ac.uk/vol1/ftp/phase3/data/NA12878/alignment/NA12878.mapped.ILLUMINA.bwa.CEU.low_coverage.20121211.bam MT
+samtools view UKY001.B0102.MT.bam > uky.sam; samtools view NA12878.MT.bam > na.sam
+py -3 -I tests/sim/mix_real.py --ancient uky.sam --modern na.sam --contig MT --length 16569 --reads 100000 --seed 101 --out mix
+pmdshodh score --quiet --library ss -r rCRS.fa --PMDconstant 0.05 mix.sam -o c0.05.tsv
+py -3 -I tests/sim/evaluate.py default=default.tsv c0.05=c0.05.tsv
+```
