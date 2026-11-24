@@ -6,6 +6,11 @@ Changes to the JSON run summary are listed with its `format_version`.
 
 ## [Unreleased]
 
+### Fixed
+- A CRAM cut short in its file definition or header container stopped with noodles' raw message: "failed to fill whole buffer", "unexpected end of file" or "incomplete deflate stream". A cut late in the header container even passed the header and failed on the records. The file definition and header container are now read before noodles parses them, so each cut says where the input ends, for example "container of 252 bytes is cut short: the input ends after 155" (exit 2, as before).
+- A CRAM that ends without its end-of-file container now says so, instead of "failed to fill whole buffer".
+- `score -o -` wrote its TSV header line to stdout before stopping on an error in the first records, such as reads without MD tags and no `-r`. Output still buffered when the run fails is now dropped, so such a failure leaves stdout empty. Errors later in the input still leave the reads written so far, with exit status 2.
+
 ### Documentation
 - The damage-curve study (roadmap milestone 6, docs/fit-validation.md) measured how well the PMD score separates damaged from undamaged reads. It used simulated reads (tests/sim) and real ancient and modern reads mixed with known labels.
   - Fitting the damage parameters to each sample gained about 1 percentage point of kept ancient reads, so it is not implemented.

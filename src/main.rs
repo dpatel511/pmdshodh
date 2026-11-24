@@ -1178,7 +1178,7 @@ fn run_score(args: &ScoreArgs) -> Result<(), Failure> {
 
     writeln!(out, "read_name\tflag\tpmds\tn_sites").map_err(&write_err)?;
     let mut summary = Summary::new(args.summary.range);
-    scan(
+    let scanned = scan(
         &mut reader,
         &header,
         &mut reference,
@@ -1196,7 +1196,13 @@ fn run_score(args: &ScoreArgs) -> Result<(), Failure> {
             writeln!(out, "{name}\t{flag}\t{}\t{}", s.pmds, s.n_sites).map_err(&write_err)?;
             Ok(None)
         },
-    )?;
+    );
+    if let Err(e) = scanned {
+        // Drop what is still buffered instead of flushing it: an error in the first records
+        // then leaves stdout empty rather than holding a header and no reads.
+        let _ = out.into_parts();
+        return Err(e);
+    }
     out.flush().map_err(&write_err)?;
     drop(out);
     output.commit()?;

@@ -2004,6 +2004,96 @@ fn bam_cut_inside_a_block_says_it_is_truncated() {
     assert!(stderr(&o).contains("probably truncated"), "{}", stderr(&o));
 }
 
+/// A CRAM cut anywhere in its file definition or header container said only "failed to fill whole
+/// buffer", "unexpected end of file" or "incomplete deflate stream"; a cut late in the header
+/// container even passed the header and failed on the records. Each cut now says where the input
+/// ends, before any output.
+#[test]
+fn cram_cut_inside_its_header_says_where_it_ends() {
+    let dir = tmp_dir("cram_cut_header");
+    let (fa, cram) = (data("pairs.fa"), data("pairs.cram"));
+    let bytes = fs::read(&cram).unwrap();
+    let header_end = 26 + 4 + 252 + 4; // well inside: the length field says 252 body bytes
+    for (cut, msg) in [
+        (
+            10,
+            "CRAM file definition is cut short: the input ends after 10 of 26 bytes",
+        ),
+        (
+            20,
+            "CRAM file definition is cut short: the input ends after 20 of 26 bytes",
+        ),
+        (
+            26,
+            "the input ends before the CRAM header container; it is probably truncated",
+        ),
+        (28, "CRAM container header is cut short"),
+        (33, "CRAM container header is cut short"),
+        (60, "container of 252 bytes is cut short"),
+        (120, "container of 252 bytes is cut short"),
+        (200, "container of 252 bytes is cut short"),
+    ] {
+        assert!(cut < header_end);
+        let path = dir.join(format!("cut{cut}.cram"));
+        fs::write(&path, &bytes[..cut]).unwrap();
+        let o = run(&["score", "--quiet", "-r", s(&fa), s(&path), "-o", "-"]);
+        assert_eq!(o.status.code(), Some(2), "cut at {cut}: {}", stderr(&o));
+        assert!(
+            stderr(&o).contains("invalid header"),
+            "cut at {cut}: {}",
+            stderr(&o)
+        );
+        assert!(stderr(&o).contains(msg), "cut at {cut}: {}", stderr(&o));
+        assert!(o.stdout.is_empty(), "cut at {cut}: stdout {:?}", o.stdout);
+    }
+}
+
+/// A CRAM whose 38-byte end-of-file container is missing said "failed to fill whole buffer".
+#[test]
+fn cram_without_its_end_of_file_container_says_so() {
+    let dir = tmp_dir("cram_no_eof");
+    let (fa, cram) = (data("pairs.fa"), data("pairs.cram"));
+    let bytes = fs::read(&cram).unwrap();
+    let path = dir.join("no_eof.cram");
+    fs::write(&path, &bytes[..bytes.len() - 38]).unwrap();
+    let o = run(&[
+        "score",
+        "--quiet",
+        "-r",
+        s(&fa),
+        s(&path),
+        "-o",
+        s(&dir.join("o.tsv")),
+    ]);
+    assert_eq!(o.status.code(), Some(2), "{}", stderr(&o));
+    assert!(
+        stderr(&o).contains("the input ends without the CRAM end-of-file container"),
+        "{}",
+        stderr(&o)
+    );
+}
+
+/// `score -o -` wrote its TSV header line to stdout before stopping on an error in the first
+/// records (here, reads without MD tags and no `-r`). Output buffered when the run fails is now
+/// dropped, so a failure early in the input leaves stdout empty.
+#[test]
+fn score_to_stdout_writes_nothing_when_the_first_reads_fail() {
+    let dir = tmp_dir("score_no_md_stdout");
+    let sam = dir.join("no_md.sam");
+    fs::write(
+        &sam,
+        "@SQ\tSN:chr1\tLN:100\nr1\t0\tchr1\t1\t60\t4M\t*\t0\t0\tTACG\tIIII\n",
+    )
+    .unwrap();
+    let o = run(&["score", "--quiet", s(&sam), "-o", "-"]);
+    assert_eq!(o.status.code(), Some(2), "{}", stderr(&o));
+    assert!(
+        o.stdout.is_empty(),
+        "stdout {:?}",
+        String::from_utf8_lossy(&o.stdout)
+    );
+}
+
 /// `score | head` printed "cannot write output: Broken pipe" and exited 1. Like samtools (killed
 /// by SIGPIPE), pmdshodh now stops quietly with status 141.
 #[cfg(unix)]
