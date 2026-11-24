@@ -6,6 +6,13 @@ Changes to the JSON run summary are listed with its `format_version`.
 
 ## [Unreleased]
 
+### Documentation
+- The damage-curve study (roadmap milestone 6, docs/fit-validation.md) measured how well the PMD score separates damaged from undamaged reads. It used simulated reads (tests/sim) and real ancient and modern reads mixed with known labels.
+  - Fitting the damage parameters to each sample gained about 1 percentage point of kept ancient reads, so it is not implemented.
+  - On double-stranded libraries the default curve is within 0.3–4.3 points of the best any curve can do.
+  - For an untreated single-stranded library, `--pmd-c 0.05` kept 3–4 points more ancient reads; the README notes this under Model parameters.
+  - Scores and defaults are unchanged.
+
 ## [0.3.3] - 2026-11-23
 
 One fix, found by fuzzing CRAM input after the 0.3 audit (docs/audit-0.3.md, B10). A corrupt or truncated CRAM is now an input error at once, instead of first allocating up to 2 GB. Scores, kept reads and the JSON run summary (`format_version` 4) are unchanged from 0.3.2.

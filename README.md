@@ -138,6 +138,8 @@ PMDtools option names are accepted as aliases (second column).
 
 Each is between 0 and 1, and `--pmd-p` + `--pmd-c` (the damage rate at the read end) must be at most 1; larger values would make scores undefined (NaN).
 
+The defaults are close to the best any damage curve can do on double-stranded libraries ([damage-curve study](https://github.com/dpatel511/pmdshodh/blob/main/docs/fit-validation.md)). Untreated single-stranded libraries with high C→T inside the molecule are the exception. On one such library (UKY001.B0102 mtDNA, mixed with modern reads), `--pmd-c 0.05` kept 3–4 percentage points more ancient reads at the same removal of modern reads. That is one library: check it on your own data. Scores with a changed `--pmd-c` are not comparable with published thresholds.
+
 ### Output and performance
 
 | Option | Applies to | Description |
@@ -221,6 +223,8 @@ pmdshodh was built from the published model and black-box testing of PMDtools 0.
 ¹ With `--pmdtools-compat`. Without it, scores differ only where PMDtools has a bug (below).
 
 Methods and full results: [docs/blackbox.md](https://github.com/dpatel511/pmdshodh/blob/main/docs/blackbox.md) and the 0.3 audit, [docs/audit-0.3.md](https://github.com/dpatel511/pmdshodh/blob/main/docs/audit-0.3.md).
+
+How well the score separates damaged from undamaged reads, and how much room any damage curve leaves, was measured on simulated reads and on real ancient and modern reads mixed with known labels: [docs/fit-validation.md](https://github.com/dpatel511/pmdshodh/blob/main/docs/fit-validation.md).
 
 ### Differences that change scores
 

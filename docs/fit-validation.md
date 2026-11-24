@@ -1,6 +1,6 @@
 # Damage-curve study: results
 
-The study plan is docs/damage-curve-study.md. This file collects its results with the commands that produced them. Section 5 holds the conclusions and the proposal for what follows (decisions C1–C5, open).
+The study plan is docs/damage-curve-study.md. This file collects its results with the commands that produced them. Section 5 holds the conclusions and the decisions on what follows: C1–C5 were accepted as recommended on 2026-11-24.
 
 ## 1. The tools are checked
 
@@ -238,7 +238,7 @@ Gains below are percentage points of damaged (ancient) reads kept at the default
 
 The default score is within 0.3–2.4 points of the best possible on ds libraries with geometric damage, and within 4.3 on the real ds shapes tested. pmdshodh's default stays as it is.
 
-### 5.2 Decisions (my recommendation first)
+### 5.2 Decisions (accepted as recommended, 2026-11-24)
 
 | # | Decision | Options |
 |---|---|---|
