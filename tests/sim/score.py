@@ -47,14 +47,23 @@ def ss_term(is_match, a, b, q):
     )
 
 
+DIVERGENCE = 0.0  # set from the simulation's parameters in main()
+
+
 def exact_term(is_match, d, q):
-    """The exact log-likelihood ratio of the simulator's own model: damage d, then a sequencing
-    error with probability 10^(-q/10) to one of the other three bases; undamaged reads have
-    errors only, and there is no divergence from the reference."""
-    eps = 10 ** (-q / 10)
-    if is_match:
-        return math.log(((1 - d) * (1 - eps) + d * eps / 3) / (1 - eps))
-    return math.log((d * (1 - eps) + (1 - d) * eps / 3) / (eps / 3))
+    """The exact log-likelihood ratio of the simulator's own model at a reference C (or G).
+    The sample carries the reference base, or with probability DIVERGENCE one of the other three;
+    a sample C is damaged with probability d (undamaged reads: 0); then a sequencing error with
+    probability 10^(-q/10) gives one of the other three bases. The read base is C or T (match or
+    damage-type mismatch); CpG context changes at diverged sites are ignored."""
+    eps, dv = 10 ** (-q / 10), DIVERGENCE
+
+    def p_read(dmg):
+        if is_match:
+            return (1 - dv) * ((1 - dmg) * (1 - eps) + dmg * eps / 3) + dv * eps / 3
+        return (1 - dv) * (dmg * (1 - eps) + (1 - dmg) * eps / 3) + dv / 3 * (1 - eps) + 2 * dv / 3 * eps / 3
+
+    return math.log(p_read(d) / p_read(0.0))
 
 
 def exact_ds_term(is_match, d, q):
@@ -129,6 +138,8 @@ def main():
     a = p.parse_args()
     params = json.load(open(f"{a.prefix}.params.json"))
     args = argparse.Namespace(**params)
+    global DIVERGENCE
+    DIVERGENCE = args.divergence
     if a.curve == "true":
         damage = Damage(args)
         five, three = damage.five_prime, damage.three_prime
