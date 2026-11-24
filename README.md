@@ -153,7 +153,7 @@ The defaults are close to the best any damage curve can do on double-stranded li
 | `-@, --threads N` | all | Threads (default 1, at most 1024). At most N do work at once, so you can pass your CPU allocation. |
 | `-r, --reference FILE` | all | Indexed reference FASTA (`samtools faidx`; bgzip also needs `.gzi`). Reference bases come from it instead of MD tags, and MD tags are checked against it. Every header sequence must be in it with the same length. |
 | `--pmdtools-compat` | all | Reproduce PMDtools 0.60, including its bugs ([limits](#limitations)). |
-| `--quiet` | all | Suppress the summary line on stderr. |
+| `--quiet` | all | Suppress the summary and the progress line on stderr. |
 
 ## Output
 
@@ -203,7 +203,7 @@ The file uses inline SVG, with no JavaScript, external files or network access, 
 | `2` | Invalid options or invalid input, for example a mapped read without an MD tag (the read is named in the message), or an input with no data at all |
 | `141` | The reader of stdout closed it early (for example `\| head`): pmdshodh stops without a message, as samtools does when SIGPIPE ends it |
 
-Results go to stdout only when requested (`-o -`, or `score`/`damage` without `-o`). The run summary line and errors go to stderr.
+Results go to stdout only when requested (`-o -`, or `score`/`damage` without `-o`). Errors and the run summary go to stderr. The summary is a short block: input, read counts, skip reasons, reads kept, first-base damage (when counted), files written, and time. In a terminal, a progress line shows reads, rate and how much of the input has been read, and the summary is coloured. Set `NO_COLOR` to turn colour off. In pipes and pipeline logs there is no progress line and no colour.
 
 ## Compatibility with PMDtools
 

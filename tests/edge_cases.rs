@@ -125,7 +125,7 @@ fn every_skip_reason_is_counted_once() {
     assert!(o.status.success());
     assert!(
         stderr(&o).contains(
-            "skipped: unmapped=1, min_mapq=1, unsupported_cigar=2, no_sequence=1, no_qualities=1"
+            "skipped   unmapped 1 · min_mapq 1 · unsupported_cigar 2 · no_sequence 1 · no_qualities 1"
         ),
         "{}",
         stderr(&o)

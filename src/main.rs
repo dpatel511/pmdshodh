@@ -15,9 +15,11 @@ use pmdshodh::sites::ReadScore;
 use pmdshodh::sites::{Library, Settings, Treatment};
 use pmdshodh::summary::{RunInfo, Summary};
 
+mod display;
+
 /// Per-read post-mortem damage (PMD) scores for ancient DNA alignments.
 #[derive(Parser)]
-#[command(name = "pmdshodh", bin_name = "pmdshodh", version)]
+#[command(name = "pmdshodh", bin_name = "pmdshodh", version, after_help = TOP_EXAMPLES)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -38,6 +40,18 @@ enum Command {
     #[command(after_help = REPORT_EXAMPLES)]
     Report(ReportArgs),
 }
+
+const TOP_EXAMPLES: &str = "\
+Examples:
+  # Keep reads with PMD score >= 3 (reference bases from MD tags, or from -r)
+  pmdshodh filter -t 3 -@ 8 in.bam -o out.bam
+  pmdshodh filter -t 3 -@ 8 -r ref.fa in.cram -o out.bam
+
+  # Damage tables and a JSON summary, then an HTML report
+  pmdshodh damage -@ 8 in.bam -o run.json
+  pmdshodh report run.json -o report.html
+
+Run 'pmdshodh <command> --help' for each command's options and examples.";
 
 const FILTER_EXAMPLES: &str = "\
 Examples:
@@ -426,9 +440,14 @@ fn open_input(path: &PathBuf) -> Result<Box<dyn Read + Send>, Failure> {
     if path.as_os_str() == "-" {
         Ok(Box::new(io::stdin()))
     } else {
-        File::open(path)
-            .map(|f| Box::new(f) as Box<dyn Read + Send>)
-            .map_err(|e| Failure::Input(format!("cannot open {}: {e}", path.display())))
+        let file = File::open(path)
+            .map_err(|e| Failure::Input(format!("cannot open {}: {e}", path.display())))?;
+        if let Ok(m) = file.metadata()
+            && m.is_file()
+        {
+            display::set_input_size(m.len());
+        }
+        Ok(Box::new(display::Counting(file)))
     }
 }
 
@@ -654,6 +673,7 @@ fn scan(
     count_damage: bool,
     max_reads: Option<u64>,
     threads: usize,
+    progress: &mut display::Progress,
     mut on_scored: impl FnMut(&AlignmentRecord, &ReadScore) -> Result<Option<bool>, Failure> + Send,
 ) -> Result<(), Failure> {
     // Damage tables are only written to the JSON summary; counting them is a quarter of the work.
@@ -665,6 +685,7 @@ fn scan(
             if batch.is_empty() {
                 return Ok(());
             }
+            progress.tick(n_read);
             batch.decode(header)?;
             let parts = score_batch(&batch, settings, filters, range);
             let first = n_read - batch.len() as u64;
@@ -700,7 +721,10 @@ fn scan(
         };
         loop {
             match read_batch(reader, header, reference, max_reads, &mut n_read) {
-                Ok(batch) if !batch.is_empty() => in_flight.push_back(spawn(batch)),
+                Ok(batch) if !batch.is_empty() => {
+                    progress.tick(n_read);
+                    in_flight.push_back(spawn(batch));
+                }
                 Ok(_) => {
                     while !in_flight.is_empty() {
                         consume_oldest(&mut in_flight)?;
@@ -1107,6 +1131,16 @@ struct Finish<'a> {
     threshold: Option<f64>,
     upper_threshold: Option<f64>,
     reference: Option<&'a Path>,
+    /// The files written, as the user named them, for the summary block.
+    outputs: Vec<String>,
+}
+
+/// An output as the user named it: `None` and "-" are standard output.
+fn output_name(path: Option<&Path>) -> String {
+    match path.filter(|p| p.as_os_str() != "-") {
+        Some(p) => p.display().to_string(),
+        None => "standard output".to_string(),
+    }
 }
 
 impl Finish<'_> {
@@ -1124,33 +1158,59 @@ impl Finish<'_> {
         })
     }
 
-    /// One summary line on stderr, unless quiet.
-    fn report(&self, json: &serde_json::Value, summary: &Summary, quiet: bool) {
+    /// The summary block on stderr, unless quiet (src/display.rs).
+    fn report(
+        &self,
+        json: &serde_json::Value,
+        summary: &Summary,
+        quiet: bool,
+        elapsed: std::time::Duration,
+    ) {
         if quiet {
             return;
         }
         let r = &json["reads"];
-        let kept = if r["kept"].is_null() {
-            String::new()
-        } else {
-            format!(", {} kept", r["kept"])
+        let count = |v: &serde_json::Value| v.as_u64().unwrap_or(0);
+        let first = &json["damage"]["first_position"];
+        let report = display::RunReport {
+            subcommand: self.subcommand.to_string(),
+            input: shown(self.input),
+            format: self.input_format.name(),
+            reference: self.reference.map(|p| p.display().to_string()),
+            library: match self.settings.library {
+                Library::DoubleStranded => "ds",
+                Library::SingleStranded => "ss",
+            },
+            treatment: match self.settings.treatment {
+                Treatment::None => "none",
+                Treatment::Half => "half",
+                Treatment::Full => "full",
+            },
+            compat: self.settings.pmdtools_compat,
+            threshold: self.threshold,
+            upper_threshold: self.upper_threshold,
+            reads: count(&r["input"]),
+            scored: count(&r["scored"]),
+            no_sites: count(&r["no_informative_sites"]),
+            kept: r["kept"].as_u64(),
+            skipped: SkipReason::ALL
+                .iter()
+                .zip(summary.skipped())
+                .filter(|(_, n)| **n > 0)
+                .map(|(reason, n)| (reason.name(), *n))
+                .collect(),
+            first_base: (count(&first["n"]) > 0).then(|| {
+                (
+                    first["c_to_t"].as_f64().unwrap_or(0.0),
+                    first["se"].as_f64().unwrap_or(0.0),
+                    count(&first["n"]),
+                )
+            }),
+            md_disagreeing: summary.md_disagreeing(),
+            outputs: self.outputs.clone(),
+            elapsed,
         };
-        eprintln!(
-            "pmdshodh {}: {} reads read, {} scored{kept}, skipped: {}",
-            self.subcommand,
-            r["input"],
-            r["scored"],
-            skip_summary(summary.skipped())
-        );
-        if summary.md_disagreeing() > 0 {
-            eprintln!(
-                "pmdshodh {}: {} scored reads have an MD tag that disagrees with the reference \
-                 (written before realignment, or against N bases that the aligner replaced, as \
-                 bwa does); they were scored from the reference",
-                self.subcommand,
-                summary.md_disagreeing()
-            );
-        }
+        eprintln!("{}", report.render(display::Style::detect()));
     }
 }
 
@@ -1163,6 +1223,7 @@ fn run_score(args: &ScoreArgs) -> Result<(), Failure> {
         args.model.reference.as_deref(),
         &[args.output.as_deref(), args.summary.summary.as_deref()],
     )?;
+    let mut progress = display::Progress::new("score", args.quiet);
     let (mut reader, header, mut reference, input_format) =
         open_alignments(&args.input, &args.model)?;
     // Both outputs are created before any record is read, so a bad path fails at once.
@@ -1188,6 +1249,7 @@ fn run_score(args: &ScoreArgs) -> Result<(), Failure> {
         args.summary.summary.is_some(),
         None,
         args.model.threads,
+        &mut progress,
         |record, s| {
             let name = record
                 .name()
@@ -1215,12 +1277,22 @@ fn run_score(args: &ScoreArgs) -> Result<(), Failure> {
         threshold: None,
         upper_threshold: None,
         reference: args.model.reference.as_deref(),
+        outputs: [Some(output_name(args.output.as_deref()))]
+            .into_iter()
+            .chain([args
+                .summary
+                .summary
+                .as_deref()
+                .map(|p| output_name(Some(p)))])
+            .flatten()
+            .collect(),
     };
     let json = fin.json(&summary);
     if let Some(s) = summary_out {
         write_json(s, &json)?;
     }
-    fin.report(&json, &summary, args.quiet);
+    progress.clear();
+    fin.report(&json, &summary, args.quiet, progress.elapsed());
     Ok(())
 }
 
@@ -1233,6 +1305,7 @@ fn run_damage(args: &DamageArgs) -> Result<(), Failure> {
         args.model.reference.as_deref(),
         &[args.output.as_deref()],
     )?;
+    let mut progress = display::Progress::new("damage", args.quiet);
     let (mut reader, header, mut reference, input_format) =
         open_alignments(&args.input, &args.model)?;
     let json_out = Output::open(args.output.as_deref())?;
@@ -1247,6 +1320,7 @@ fn run_damage(args: &DamageArgs) -> Result<(), Failure> {
         true,
         args.max_reads,
         args.model.threads,
+        &mut progress,
         |_, _| Ok(None),
     )?;
     let fin = Finish {
@@ -1258,10 +1332,12 @@ fn run_damage(args: &DamageArgs) -> Result<(), Failure> {
         threshold: None,
         upper_threshold: None,
         reference: args.model.reference.as_deref(),
+        outputs: vec![output_name(args.output.as_deref())],
     };
     let json = fin.json(&summary);
     write_json(json_out, &json)?;
-    fin.report(&json, &summary, args.quiet);
+    progress.clear();
+    fin.report(&json, &summary, args.quiet, progress.elapsed());
     Ok(())
 }
 
@@ -1319,20 +1395,6 @@ fn pmdtools_ds_text(x: f64) -> String {
         s.pop();
     }
     s
-}
-
-fn skip_summary(skipped: &[u64]) -> String {
-    let reasons: Vec<String> = SkipReason::ALL
-        .iter()
-        .zip(skipped)
-        .filter(|(_, n)| **n > 0)
-        .map(|(r, n)| format!("{}={n}", r.name()))
-        .collect();
-    if reasons.is_empty() {
-        "none".to_string()
-    } else {
-        reasons.join(", ")
-    }
 }
 
 /// Where a command writes. A regular file, or a path that does not exist yet, is written under a
@@ -1595,6 +1657,7 @@ fn run_filter(args: &FilterArgs) -> Result<(), Failure> {
         &[Some(&args.output), args.summary.summary.as_deref()],
     )?;
 
+    let mut progress = display::Progress::new("filter", args.quiet);
     let (mut reader, in_header, mut reference, input_format) =
         open_alignments(&args.input, &args.model)?;
 
@@ -1637,6 +1700,7 @@ fn run_filter(args: &FilterArgs) -> Result<(), Failure> {
         args.summary.summary.is_some(),
         None,
         args.model.threads,
+        &mut progress,
         |record, score| {
             let keep = !compat_keeps_none
                 && args.threshold.is_none_or(|t| score.pmds >= t)
@@ -1690,12 +1754,22 @@ fn run_filter(args: &FilterArgs) -> Result<(), Failure> {
         threshold: args.threshold,
         upper_threshold: args.upper_threshold,
         reference: args.model.reference.as_deref(),
+        outputs: [Some(output_name(Some(&args.output)))]
+            .into_iter()
+            .chain([args
+                .summary
+                .summary
+                .as_deref()
+                .map(|p| output_name(Some(p)))])
+            .flatten()
+            .collect(),
     };
     let json = fin.json(&summary);
     if let Some(s) = summary_out {
         write_json(s, &json)?;
     }
-    fin.report(&json, &summary, args.quiet);
+    progress.clear();
+    fin.report(&json, &summary, args.quiet, progress.elapsed());
     Ok(())
 }
 

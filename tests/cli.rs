@@ -155,7 +155,13 @@ fn stdout_carries_only_the_bam_and_the_summary_goes_to_stderr() {
     assert!(o.status.success());
     assert_eq!(&o.stdout[..2], &[0x1f, 0x8b], "BGZF/gzip magic on stdout");
     let stderr = String::from_utf8(o.stderr).unwrap();
-    assert!(stderr.contains("1500 reads read") && stderr.contains("kept"));
+    assert!(stderr.contains("1,500 read") && stderr.contains("524 of 1,500 scored"));
+    // The summary block names the output; stdout is not a terminal, so no progress line or colour.
+    assert!(stderr.contains("written   standard output"), "{stderr}");
+    assert!(
+        !stderr.contains('\r') && !stderr.contains('\x1b'),
+        "{stderr:?}"
+    );
 
     let quiet = run(&[
         "filter",

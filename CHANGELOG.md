@@ -6,6 +6,20 @@ Changes to the JSON run summary are listed with its `format_version`.
 
 ## [Unreleased]
 
+### Changed
+- The run summary on stderr is now a short block instead of one line. It shows:
+  - the command, version, library, treatment and filter bounds;
+  - the input and where its reference bases come from;
+  - reads read, scored and skipped, with reasons;
+  - reads kept and their share of scored reads;
+  - the 5′ first-base C→T rate when damage was counted;
+  - the files written, elapsed time and reads per second.
+
+  Scripts should read the JSON run summary rather than this text, which is for people.
+- In a terminal, a progress line shows reads, rate, the share of the input file read, and elapsed time. It appears after one second and is erased before the summary. The summary is coloured; `NO_COLOR` turns colour off. Without a terminal (pipes, pipeline logs) there is no progress line and no colour.
+  - Speed is unchanged: `filter -@ 8` on BER11_L_NOuser took 7.48–7.51 s against 0.3.3's 7.50–7.60 s, three alternating runs each.
+- `pmdshodh --help` ends with examples, as each command's help already did.
+
 ### Fixed
 - A CRAM cut short in its file definition or header container stopped with noodles' raw message: "failed to fill whole buffer", "unexpected end of file" or "incomplete deflate stream". A cut late in the header container even passed the header and failed on the records. The file definition and header container are now read before noodles parses them, so each cut says where the input ends, for example "container of 252 bytes is cut short: the input ends after 155" (exit 2, as before).
 - A CRAM that ends without its end-of-file container now says so, instead of "failed to fill whole buffer".
