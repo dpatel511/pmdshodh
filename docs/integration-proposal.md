@@ -1,6 +1,6 @@
 # Proposal: pipeline integration (roadmap milestone 7)
 
-Status: **proposed 2026-11-23**, for your decision (section 5). Nothing has been sent upstream.
+Status: **agreed 2026-11-23.** I1–I6 were accepted as recommended (section 5). Both modules are built and tested locally (section 7); nothing has been sent upstream.
 
 ## 1. Goal and scope
 
@@ -95,3 +95,23 @@ Bioconda needs nothing from us unless the bot's bump stalls. The module pins whi
 - Forking nf-core/modules and MultiQC on your GitHub account.
 - Each upstream issue, PR and comment, with the final text shown to you first.
 - Any message to the eager or MultiQC maintainers.
+
+## 7. Progress
+
+Both modules are built locally, in clones under WSL `/root/nfcore`, committed there and not pushed.
+
+**nf-core `pmdshodh/filter`** (2026-11-23; nf-core/tools 4.2.2, nf-test 0.9.5, Nextflow 26.10.7, Docker):
+- `nf-core modules lint` passes all 67 checks, with no warnings.
+- nf-test passes 4 of 4 tests, on two runs with stable snapshots: BAM with MD tags, BAM with FASTA, CRAM with FASTA in single-stranded UDG-half mode, and a stub. The test data is nf-core's `test.paired_end.sorted.bam` and `genome.fasta`.
+- The module's BAM records are identical to running `pmdshodh filter` directly with the same container, and the read counts match.
+- It pins Bioconda 0.3.1, the newest Bioconda has. The bot's 0.3.3 bump (bioconda/bioconda-recipes#72119) passes its checks and waits for review. The module PR waits for it, so it can pin 0.3.3 (decided 2026-11-24).
+- The Seqera containers that nf-core now expects (`nf-core modules containers create`) are built only just before the PR, with your OK.
+
+**MultiQC `pmdshodh`** (2026-11-24; MultiQC 1.35 development version):
+- It finds summaries by their second line, `"command": "…pmdshodh …"`, and then checks `tool.name`. The tool name comes after the damage tables and is past MultiQC's 1,000-line search limit when `--range` is above about 40.
+- Samples are named after the summary's `input` file. A second summary of the same input is named after its own file, as `pmdshodh report` does.
+- **General Statistics:** 5′ first-base C>T, % kept by the threshold, and reads scored (hidden by default).
+- **Sections:** read counts (kept, removed, scored, skipped by reason), damage by position (5′ C>T, and 3′ G>A for ds or C>T for ss, computed from the counts as `report` does), the PMD score distribution, and read lengths (scored and kept).
+- `--strict` runs without warnings on summaries written by pmdshodh 0.1.0, 0.2.4, 0.3.1 and 0.3.3 (`format_version` 1 to 4), from `filter`, `score` and `damage`, ds and ss.
+- 6 unit tests, `ruff` and `mypy` pass.
+- Upstream it also needs sample files in MultiQC's test-data repository, made with relative paths so no local path is published.
