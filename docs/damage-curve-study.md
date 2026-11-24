@@ -1,6 +1,6 @@
 # Proposal: measure before fitting (roadmap milestone 6, re-scoped)
 
-Status: **proposed 2026-11-24.** Milestone 6 is re-scoped from "fitted damage parameters" to a measurement study (section 1). Decisions S1–S5 (section 8) are open. Nothing is implemented.
+Status: **agreed 2026-11-24.** Milestone 6 is re-scoped from "fitted damage parameters" to a measurement study (section 1). S1–S5 (section 8) were accepted as recommended.
 
 ## 1. Why the milestone was re-scoped
 
