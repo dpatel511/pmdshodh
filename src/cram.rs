@@ -28,15 +28,40 @@ impl Reader {
         }
     }
 
+    /// The file definition and the header container are read here, so a cut anywhere in them says
+    /// where the input ends; noodles then parses those bytes alone.
     pub fn read_header(&mut self) -> io::Result<sam::Header> {
-        self.inner.read_header()
+        let input = self.inner.get_mut();
+        let mut bytes = Vec::with_capacity(FILE_DEFINITION_LEN as usize);
+        input
+            .by_ref()
+            .take(FILE_DEFINITION_LEN)
+            .read_to_end(&mut bytes)?;
+        if (bytes.len() as u64) < FILE_DEFINITION_LEN {
+            return Err(cut_short(format!(
+                "CRAM file definition is cut short: the input ends after {} of {FILE_DEFINITION_LEN} bytes",
+                bytes.len()
+            )));
+        }
+        let Some(container) = read_container_bytes(input)? else {
+            return Err(cut_short(
+                "the input ends before the CRAM header container; it is probably truncated".into(),
+            ));
+        };
+        bytes.extend_from_slice(&container);
+        cram::io::Reader::new(&bytes[..]).read_header()
     }
 
     /// Read up to `n` containers; fewer (none at all) at the end of the input.
     pub fn read_containers(&mut self, n: usize) -> io::Result<Vec<cram::io::reader::Container>> {
         let mut containers = Vec::with_capacity(n);
         while !self.eof && containers.len() < n {
-            let bytes = read_container_bytes(self.inner.get_mut())?;
+            let Some(bytes) = read_container_bytes(self.inner.get_mut())? else {
+                return Err(cut_short(
+                    "the input ends without the CRAM end-of-file container; it is probably truncated"
+                        .into(),
+                ));
+            };
             let mut container = cram::io::reader::Container::default();
             if cram::io::Reader::new(&bytes[..]).read_container(&mut container)? == 0 {
                 self.eof = true;
@@ -48,41 +73,66 @@ impl Reader {
     }
 }
 
-/// One container's bytes, header and body, for noodles to parse. noodles' `read_container`
-/// allocates the body length the header claims before reading it, so a corrupt header could cost
-/// up to 2 GB (audit finding B10); here the body is read as it arrives, and a container longer than
-/// the input is an error that costs only the bytes the input has.
-fn read_container_bytes(input: &mut impl Read) -> io::Result<Vec<u8>> {
-    // CRAM 3 §7.3: length, reference sequence ID, alignment start, span, records (ITF8), record
-    // counter, bases (LTF8), blocks, landmarks (ITF8 array), CRC-32.
+/// The CRAM file definition: magic, version and file ID (CRAM 3 §6).
+const FILE_DEFINITION_LEN: u64 = 26;
+
+fn cut_short(msg: String) -> io::Error {
+    io::Error::new(io::ErrorKind::UnexpectedEof, msg)
+}
+
+/// One container's bytes, header and body, for noodles to parse, or `None` if the input ends
+/// before it. noodles' `read_container` allocates the body length the header claims before
+/// reading it, so a corrupt header could cost up to 2 GB (audit finding B10); here the body is
+/// read as it arrives, and a container longer than the input is an error that costs only the
+/// bytes the input has.
+fn read_container_bytes(input: &mut impl Read) -> io::Result<Option<Vec<u8>>> {
+    let mut len = Vec::with_capacity(4);
+    (&mut *input).take(4).read_to_end(&mut len)?;
+    if len.is_empty() {
+        return Ok(None);
+    }
     let mut head = Recorded {
         inner: &mut *input,
-        bytes: Vec::new(),
+        bytes: len.clone(),
     };
-    let mut len = [0; 4];
-    head.read_exact(&mut len)?;
-    for _ in 0..4 {
-        read_itf8(&mut head)?;
-    }
-    for _ in 0..2 {
-        read_ltf8(&mut head)?;
-    }
-    read_itf8(&mut head)?;
-    for _ in 0..read_itf8(&mut head)?.max(0) {
-        read_itf8(&mut head)?;
-    }
-    head.read_exact(&mut [0; 4])?;
+    read_container_header(&mut head, len.len()).map_err(|e| {
+        if e.kind() == io::ErrorKind::UnexpectedEof {
+            cut_short("CRAM container header is cut short: the input ends inside it".into())
+        } else {
+            e
+        }
+    })?;
     let mut bytes = head.bytes;
+    let len: [u8; 4] = bytes[..4]
+        .try_into()
+        .expect("read_container_header read the length");
     // A negative length is left for noodles to reject.
     let len = u64::try_from(i32::from_le_bytes(len)).unwrap_or(0);
     let read = input.take(len).read_to_end(&mut bytes)?;
     if (read as u64) < len {
-        return Err(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            format!("container of {len} bytes is cut short: the input ends after {read}"),
-        ));
+        return Err(cut_short(format!(
+            "container of {len} bytes is cut short: the input ends after {read}"
+        )));
     }
-    Ok(bytes)
+    Ok(Some(bytes))
+}
+
+/// The rest of a container header after the first `have` bytes of its length (CRAM 3 §7.3):
+/// length, reference sequence ID, alignment start, span, records (ITF8), record counter, bases
+/// (LTF8), blocks, landmarks (ITF8 array), CRC-32.
+fn read_container_header(head: &mut impl Read, have: usize) -> io::Result<()> {
+    head.read_exact(&mut [0; 4][have..])?;
+    for _ in 0..4 {
+        read_itf8(head)?;
+    }
+    for _ in 0..2 {
+        read_ltf8(head)?;
+    }
+    read_itf8(head)?;
+    for _ in 0..read_itf8(head)?.max(0) {
+        read_itf8(head)?;
+    }
+    head.read_exact(&mut [0; 4])
 }
 
 /// A reader that keeps a copy of the bytes read through it.
