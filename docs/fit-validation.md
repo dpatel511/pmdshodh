@@ -1,6 +1,6 @@
 # Damage-curve study: results
 
-The study plan is docs/damage-curve-study.md. This file collects its results as they come, with the commands that produced them. There are no conclusions yet.
+The study plan is docs/damage-curve-study.md. This file collects its results with the commands that produced them. Section 5 holds the conclusions and the proposal for what follows (decisions C1–C5, open).
 
 ## 1. The tools are checked
 
@@ -220,3 +220,36 @@ py -3 -I tests/sim/mix_real.py --ancient uky.sam --modern na.sam --contig MT --l
 pmdshodh score --quiet --library ss -r rCRS.fa --PMDconstant 0.05 mix.sam -o c0.05.tsv
 py -3 -I tests/sim/evaluate.py default=default.tsv c0.05=c0.05.tsv
 ```
+
+## 5. Conclusions and proposal (study step 6, 2026-11-24)
+
+### 5.1 What the study found
+
+Gains below are percentage points of damaged (ancient) reads kept at the default's removal of undamaged (modern) reads, against the agreed margin of 5 (S3).
+
+| Question | Answer | Evidence |
+|---|---|---|
+| Does fitting P (the original milestone) help? | **No: about +1 at most** | −0.4 to +0.7 in 17 simulated cases; ≤ +1.2 on real shapes; +1.0 to +1.2 on real reads |
+| How much room does any damage curve leave on ds libraries? | **Under the margin** | Ceiling +0.3 to +2.4 (geometric curves), +0.1 to +4.3 (real shapes) |
+| Is there room anywhere? | **Untreated ss libraries** | UKY001 shape: ceiling +6.2, true curve +5.1 |
+| What captures it? | **The floor C, an existing option** | `--PMDconstant` 0.035–0.07: +4.3 on the simulated shape; +3.3 to +3.6 on real reads |
+| What limits filtering? | **The reads themselves** | Even the ceiling keeps 9–43% of damaged reads at this removal rate; most carry too few damaged bases |
+| Does read length help? | **Only if the two populations differ in length** | +5.0 over the ceiling with a 25 bp difference; 0 without |
+
+The default score is within 0.3–2.4 points of the best possible on ds libraries with geometric damage, and within 4.3 on the real ds shapes tested. pmdshodh's default stays as it is.
+
+### 5.2 Decisions (my recommendation first)
+
+| # | Decision | Options |
+|---|---|---|
+| C1 | The fitted-P plan | **Close it: no `--fit`, no `--fit-from`, no summary change.** The study is the milestone's result / implement it anyway as a small opt-in |
+| C2 | The floor C for untreated ss libraries | **Document it:** a short note in the docs that untreated single-stranded libraries with high interior C→T may keep 3–4 percentage points more of their ancient reads with `--PMDconstant 0.05`, measured on one library (section 4); no default changes / no docs change until a second library confirms it |
+| C3 | Estimating C from the data | **Not now.** For ds libraries the gain is small, and C cannot be separated from the background in the damage tables (study section 2.1). Revisit if a second untreated ss library shows the same gain / write a design note for an ss-only estimate, using G→A as the background |
+| C4 | Read length as evidence | **Not now.** Its value depends on how far endogenous and contaminant lengths differ, which varies by sample and is unknown here. It would also be a model change. Revisit with real length data / write a design note now |
+| C5 | Milestone 6 status | **Done:** the roadmap row records the result and links here; the README's validation section links here only if C2 adds user-facing guidance / keep the milestone open for C3 or C4 |
+
+### 5.3 What stays in the repository
+
+- **tests/sim:** the simulator, the checks, the scorers, the fit, the evaluation and the real-read mixer. They can be rerun to answer the same questions for new damage shapes or libraries.
+- **This file:** every number above, with its commands and seeds.
+- **Not committed:** the simulated reads and the downloaded NA12878 slice. Both are rebuilt by the commands above.
