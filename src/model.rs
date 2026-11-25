@@ -70,7 +70,7 @@ fn log_ratio(is_match: bool, p_ancient: f64, p_null: f64) -> f64 {
 /// Double-stranded score term of one informative site at distance `z` with base quality `q`.
 /// `is_match` is false for a C→T (or G→A) mismatch.
 ///
-/// Terms for the run's parameters are precomputed once ([`DsTable`]); values outside the table,
+/// Terms for the run's parameters are precomputed once (`DsTable`); values outside the table,
 /// or a different parameter set, are computed directly. Both give bit-identical results.
 pub fn site_term_ds(is_match: bool, z: u32, q: u8, params: &Params) -> f64 {
     let table = ((1..=DsTable::MAX_Z).contains(&z) && q <= DsTable::MAX_Q)
@@ -140,7 +140,7 @@ pub fn site_term_ss(is_match: bool, z: u32, y: u32, q: u8, params: &Params) -> f
 /// score), with the same null-model background damage as the double-stranded term.
 ///
 /// The damage at each distance and the error and null terms at each quality are precomputed
-/// once for the run's parameters ([`S1Table`]); the result is bit-identical to computing them
+/// once for the run's parameters (`S1Table`); the result is bit-identical to computing them
 /// here.
 pub fn site_term_s1(is_match: bool, z: u32, y: u32, q: u8, params: &Params) -> f64 {
     let in_range = |d: u32| (1..=S1Table::MAX_Z).contains(&d);

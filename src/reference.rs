@@ -305,7 +305,7 @@ impl Reference {
     /// outside the repository's lock, so threads decoding earlier batches keep going.
     ///
     /// When the batch moves to another reference sequence, the cache is cleared once it holds more
-    /// than [`CRAM_CACHED_BASES`]; sorted input then loads each sequence about once (the one the
+    /// than `CRAM_CACHED_BASES`; sorted input then loads each sequence about once (the one the
     /// batch starts on is loaded again after a clear).
     ///
     /// The sequences loaded here are checked against the header's `M5` on the thread pool (with
