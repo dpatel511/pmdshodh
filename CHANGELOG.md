@@ -6,6 +6,10 @@ Changes to the JSON run summary are listed with its `format_version`.
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-11-26
+
+Clearer terminal output and two fixes for error cases. Scores, kept reads, stdout and the JSON run summary (`format_version` 4) are unchanged from 0.3.3.
+
 ### Changed
 - The run summary on stderr is now a short block instead of one line. It shows:
   - the command, version, library, treatment and filter bounds;
@@ -217,7 +221,8 @@ First release.
 - `score -o -` writes to stdout; it used to create a file named `-`.
 - `--pmdtools-compat` now also reproduces PMDtools 0.60 for lowercase reference bases in MD (never counted as C or G) and for reverse-strand reads whose MD contains characters PMDtools drops when reverse-complementing (e.g. lowercase `n`). Default scoring is unchanged; both are listed as departures in docs/design.md.
 
-[Unreleased]: https://github.com/dpatel511/pmdshodh/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/dpatel511/pmdshodh/compare/v0.3.4...HEAD
+[0.3.4]: https://github.com/dpatel511/pmdshodh/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/dpatel511/pmdshodh/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/dpatel511/pmdshodh/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/dpatel511/pmdshodh/compare/v0.3.0...v0.3.1
