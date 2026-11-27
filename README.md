@@ -3,6 +3,7 @@
 [![CI](https://github.com/dpatel511/pmdshodh/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/dpatel511/pmdshodh/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/pmdshodh?label=pypi)](https://pypi.org/project/pmdshodh/)
 [![Bioconda](https://img.shields.io/conda/vn/bioconda/pmdshodh?label=bioconda)](https://anaconda.org/bioconda/pmdshodh)
+[![crates.io](https://img.shields.io/crates/v/pmdshodh)](https://crates.io/crates/pmdshodh)
 [![GitHub release](https://img.shields.io/github/v/release/dpatel511/pmdshodh)](https://github.com/dpatel511/pmdshodh/releases/latest)
 [![Rust 1.91+](https://img.shields.io/badge/rust-1.91%2B-orange)](https://github.com/dpatel511/pmdshodh/blob/main/Cargo.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](https://github.com/dpatel511/pmdshodh/blob/main/LICENSE)
@@ -49,6 +50,7 @@ pmdshodh does not classify taxa, estimate contamination, call genotypes or resca
 | Bioconda | `conda install -c conda-forge -c bioconda pmdshodh` |
 | pip | `pip install pmdshodh` |
 | Prebuilt binary | download from [GitHub Releases](https://github.com/dpatel511/pmdshodh/releases) |
+| crates.io | `cargo install pmdshodh` (Rust 1.91 or newer; builds from source) |
 | From source | `cargo build --release` (Rust 1.91 or newer) |
 
 - **pip** wheels contain the compiled binary only and install the `pmdshodh` command.
